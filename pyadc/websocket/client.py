@@ -268,4 +268,5 @@ class WebSocketClient:
         if self._state == state:
             return
         self._state = state
+        log.debug("WS state → %s", state)
         self._bridge.event_broker.publish(ConnectionEvent(current_state=state))

@@ -101,7 +101,7 @@ class BaseController:
             self._devices = new_devices
             return list(self._devices.values())
         except Exception as err:
-            log.warning("Failed to fetch %s: %s", self.resource_type, err)
+            log.debug("Failed to fetch %s: %s", self.resource_type, err)
             return []
 
     def _parse_device(self, item: dict[str, Any]) -> Any:
