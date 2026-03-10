@@ -357,6 +357,15 @@ class DeviceType(IntEnum):
     IQ_SMOKE_MULTI_FUNCTION = 53
     GAS = 57
     ACCESS_CARD_READER = 73
+    CLIMAX_PIR_CAMERA = 66
+    DSC_PIR_CAMERA = 67
+    QOLSYS_PANEL_CAMERA = 68
+    GLASSBREAK = 19
+    IQ_PANEL_GLASSBREAK = 83
+    IQ_PANEL_MOTION = 89
+    HONEYWELL_PANEL_CAMERA = 91
+    POWERG_PIR_CAMERA = 113
+    GC_NEXT_PANEL_CAMERA = 126
 
 
 # ---------------------------------------------------------------------------
