@@ -53,7 +53,7 @@ class PartitionController(BaseController):
             no_entry_delay: Arm without an entry delay (instant alarm).
             force_arm: Arm even if conditions would normally prevent it.
         """
-        await self._bridge.client.post(
+        await self._post(
             f"{self.resource_type}/{partition_id}/armAway",
             {
                 "silentArming": silent,
@@ -79,7 +79,7 @@ class PartitionController(BaseController):
             force_bypass: Automatically bypass open sensors.
             no_entry_delay: Arm without an entry delay.
         """
-        await self._bridge.client.post(
+        await self._post(
             f"{self.resource_type}/{partition_id}/armStay",
             {
                 "silentArming": silent,
@@ -91,11 +91,14 @@ class PartitionController(BaseController):
     async def arm_night(self, partition_id: str) -> None:
         """Arm the partition in Night mode (if supported by the panel).
 
+        Night arming in ADC has no dedicated route; it uses the armStay
+        endpoint with the ``nightArming`` flag set to ``True``.
+
         Args:
             partition_id: Resource ID of the partition to arm.
         """
-        await self._bridge.client.post(
-            f"{self.resource_type}/{partition_id}/armNight",
+        await self._post(
+            f"{self.resource_type}/{partition_id}/armStay",
             {"nightArming": True},
         )
 
@@ -107,7 +110,7 @@ class PartitionController(BaseController):
             clear_alarms: When ``True``, simultaneously acknowledge any active
                 alarms so the panel returns to a clean state.
         """
-        await self._bridge.client.post(
+        await self._post(
             f"{self.resource_type}/{partition_id}/disarm",
             {"clearAlarms": clear_alarms},
         )
@@ -127,7 +130,7 @@ class PartitionController(BaseController):
             bypass: ``True`` to bypass (ignore) the sensors; ``False`` to
                 restore them to normal monitoring.
         """
-        await self._bridge.client.post(
+        await self._post(
             f"{self.resource_type}/{partition_id}/bypassSensors",
             {
                 "bypass": "|".join(sensor_ids) if bypass else "",
@@ -141,7 +144,7 @@ class PartitionController(BaseController):
         Args:
             partition_id: Resource ID of the partition to clear.
         """
-        await self._bridge.client.post(
+        await self._post(
             f"{self.resource_type}/{partition_id}/clearPanelFaults",
             {},
         )

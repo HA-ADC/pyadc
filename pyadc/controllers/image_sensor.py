@@ -21,7 +21,7 @@ class ImageSensorController(BaseController):
 
     async def peek_in_now(self, sensor_id: str) -> None:
         """Request an immediate image capture from the sensor."""
-        await self._bridge.client.post(
+        await self._post(
             f"{self.resource_type}/{sensor_id}/doPeekInNow",
             {},
         )

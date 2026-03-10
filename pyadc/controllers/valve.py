@@ -23,14 +23,14 @@ class ValveController(BaseController):
 
     async def open(self, valve_id: str) -> None:
         """Open a water valve."""
-        await self._bridge.client.post(
+        await self._post(
             f"{self.resource_type}/{valve_id}/open",
             {},
         )
 
     async def close(self, valve_id: str) -> None:
         """Close a water valve."""
-        await self._bridge.client.post(
+        await self._post(
             f"{self.resource_type}/{valve_id}/close",
             {},
         )

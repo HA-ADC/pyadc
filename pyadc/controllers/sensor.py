@@ -23,14 +23,14 @@ class SensorController(BaseController):
 
     async def bypass(self, sensor_id: str) -> None:
         """Bypass a sensor."""
-        await self._bridge.client.post(
+        await self._post(
             f"{self.resource_type}/{sensor_id}/bypass",
             {},
         )
 
     async def unbypass(self, sensor_id: str) -> None:
         """Remove bypass from a sensor."""
-        await self._bridge.client.post(
+        await self._post(
             f"{self.resource_type}/{sensor_id}/unbypass",
             {},
         )

@@ -86,6 +86,32 @@ class ResourceEventType(StrEnum):
 
 
 # ---------------------------------------------------------------------------
+# INT_TO_RESOURCE_EVENT_TYPE — C# EventTypeEnum integer → ResourceEventType
+#
+# The C# backend serializes MonitorEventWSMessage.EventType as an integer
+# (using Newtonsoft.Json default enum serialization, no StringEnumConverter).
+# This dict maps authoritative C# EventTypeEnum integer values to their
+# Python ResourceEventType equivalents for use in _handle_raw_event.
+#
+# Source: software/DotNetShared/DotNetStandard/Alarm.Common.Enums/EventTypeEnum.cs
+# ---------------------------------------------------------------------------
+
+INT_TO_RESOURCE_EVENT_TYPE: dict[int, "ResourceEventType"] = {
+    0: ResourceEventType.CLOSED,           # Closed = 0
+    8: ResourceEventType.DISARMED,         # Disarmed = 8
+    9: ResourceEventType.ARMED_STAY,       # ArmedStay = 9
+    10: ResourceEventType.ARMED_AWAY,      # ArmedAway = 10
+    15: ResourceEventType.OPENED,          # Opened = 15
+    90: ResourceEventType.DOOR_UNLOCKED,   # DoorUnlocked = 90
+    91: ResourceEventType.DOOR_LOCKED,     # DoorLocked = 91
+    100: ResourceEventType.OPENED_CLOSED,  # OpenedClosed = 100
+    113: ResourceEventType.ARMED_NIGHT,    # ArmedNight = 113
+    315: ResourceEventType.LIGHT_TURNED_ON,   # LightTurnedOn = 315
+    316: ResourceEventType.LIGHT_TURNED_OFF,  # LightTurnedOff = 316
+}
+
+
+# ---------------------------------------------------------------------------
 # DeviceStatusFlags — bitmask from §4.2 DeviceStatusUpdate WebSocket messages
 # ---------------------------------------------------------------------------
 

@@ -20,14 +20,14 @@ class LockController(BaseController):
 
     async def lock(self, lock_id: str) -> None:
         """Lock a lock."""
-        await self._bridge.client.post(
+        await self._post(
             f"{self.resource_type}/{lock_id}/lock",
             {},
         )
 
     async def unlock(self, lock_id: str) -> None:
         """Unlock a lock."""
-        await self._bridge.client.post(
+        await self._post(
             f"{self.resource_type}/{lock_id}/unlock",
             {},
         )

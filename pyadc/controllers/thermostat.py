@@ -76,13 +76,13 @@ class ThermostatController(BaseController):
         if mode is not None:
             body["desiredState"] = mode
         if fan_mode is not None:
-            body["fanMode"] = fan_mode
+            body["desiredFanMode"] = fan_mode
         if heat_setpoint is not None:
             body["desiredHeatSetpoint"] = heat_setpoint
         if cool_setpoint is not None:
             body["desiredCoolSetpoint"] = cool_setpoint
 
-        await self._bridge.client.post(
+        await self._post(
             f"{self.resource_type}/{thermostat_id}/setState",
             body,
         )

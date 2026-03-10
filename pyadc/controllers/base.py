@@ -20,11 +20,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from pyadc.const import ResourceEventType
+from pyadc.const import INT_TO_RESOURCE_EVENT_TYPE, ResourceEventType
 from pyadc.events import EventBrokerTopic, ResourceEventMessage
+from pyadc.exceptions import NotAuthorized
 from pyadc.websocket.messages import (
     DeviceStatusUpdateWSMessage,
     EventWSMessage,
+    MonitorEventWSMessage,
     PropertyChangeWSMessage,
     RawResourceEventMessage,
 )
@@ -124,6 +126,16 @@ class BaseController:
         if isinstance(ws_msg, DeviceStatusUpdateWSMessage):
             log.debug("DeviceStatusUpdate: device_id=%s new_state=%s flag_mask=%s", ws_msg.device_id, ws_msg.new_state, ws_msg.flag_mask)
             self._handle_status_update(ws_msg)
+        elif isinstance(ws_msg, MonitorEventWSMessage):
+            # C# serializes EventTypeEnum as integer — convert to ResourceEventType string
+            raw_et = ws_msg.event_type
+            event_type: ResourceEventType | str | int
+            if isinstance(raw_et, (int, float)):
+                event_type = INT_TO_RESOURCE_EVENT_TYPE.get(int(raw_et), int(raw_et))
+            else:
+                event_type = raw_et
+            log.debug("MonitorEvent: device_id=%s event_type=%s (raw=%s) device_type=%s", ws_msg.device_id, event_type, raw_et, ws_msg.device_type)
+            self._handle_event_by_id(ws_msg.device_id, event_type)
         elif isinstance(ws_msg, EventWSMessage):
             log.debug("EventWSMessage: device_id=%s event_type=%s", ws_msg.device_id, ws_msg.event_type)
             self._handle_event(ws_msg)
@@ -153,19 +165,20 @@ class BaseController:
         )
 
     def _handle_event(self, msg: EventWSMessage) -> None:
-        """Map a ``ResourceEventType`` to a device state update via ``_event_state_map``.
+        """Map a ``ResourceEventType`` to a device state update via ``_event_state_map``."""
+        self._handle_event_by_id(msg.device_id, msg.event_type)
 
-        If ``msg.event_type`` is present in ``_event_state_map`` and the
-        mapped value is not ``None``, sets ``device.state`` to the new value
-        and publishes ``RESOURCE_UPDATED``.  If the value *is* ``None`` only
-        the event is published (used when state must be inferred from separate
-        property-change messages).
+    def _handle_event_by_id(self, device_id: str, event_type: ResourceEventType | str | int) -> None:
+        """Core event-state mapping logic shared by EventWSMessage and MonitorEventWSMessage.
+
+        If ``event_type`` is present in ``_event_state_map`` and the mapped value
+        is not ``None``, sets ``device.state`` and publishes ``RESOURCE_UPDATED``.
         """
-        device = self._get_device_by_ws_id(msg.device_id)
+        device = self._get_device_by_ws_id(device_id)
         if device is None:
             return
 
-        new_state = self._event_state_map.get(msg.event_type)
+        new_state = self._event_state_map.get(event_type)
         if new_state is not None:
             device.state = new_state
             self._bridge.event_broker.publish(
@@ -176,8 +189,21 @@ class BaseController:
             )
         else:
             log.debug(
-                "Unhandled event type %s for %s", msg.event_type, self.resource_type
+                "Unhandled event type %s for %s", event_type, self.resource_type
             )
+
+    async def _post(self, path: str, body: dict | None = None) -> dict:
+        """POST with automatic re-login retry on 403 (ASP.NET session expiry).
+
+        ADC HTTP sessions expire after ~20 min of inactivity (WS pings don't
+        count). If a command returns 403, we re-login once and retry.
+        """
+        try:
+            return await self._bridge.client.post(path, body or {})
+        except NotAuthorized:
+            log.info("403 on POST %s — re-authenticating and retrying", path)
+            await self._bridge.auth.login()
+            return await self._bridge.client.post(path, body or {})
 
     def _handle_property_change(self, msg: PropertyChangeWSMessage) -> None:
         """Handle numeric property changes. Subclasses override as needed."""

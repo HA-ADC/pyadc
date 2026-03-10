@@ -23,14 +23,14 @@ class GarageDoorController(BaseController):
 
     async def open(self, device_id: str) -> None:
         """Open a garage door."""
-        await self._bridge.client.post(
+        await self._post(
             f"{self.resource_type}/{device_id}/open",
             {},
         )
 
     async def close(self, device_id: str) -> None:
         """Close a garage door."""
-        await self._bridge.client.post(
+        await self._post(
             f"{self.resource_type}/{device_id}/close",
             {},
         )
@@ -48,14 +48,14 @@ class GateController(BaseController):
 
     async def open(self, device_id: str) -> None:
         """Open a gate."""
-        await self._bridge.client.post(
+        await self._post(
             f"{self.resource_type}/{device_id}/open",
             {},
         )
 
     async def close(self, device_id: str) -> None:
         """Close a gate."""
-        await self._bridge.client.post(
+        await self._post(
             f"{self.resource_type}/{device_id}/close",
             {},
         )

@@ -41,14 +41,14 @@ class LightController(BaseController):
             body["r"] = r
             body["g"] = g
             body["b"] = b
-        await self._bridge.client.post(
+        await self._post(
             f"{self.resource_type}/{light_id}/turnOn",
             body,
         )
 
     async def turn_off(self, light_id: str) -> None:
         """Turn a light off."""
-        await self._bridge.client.post(
+        await self._post(
             f"{self.resource_type}/{light_id}/turnOff",
             {},
         )
