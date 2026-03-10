@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Self
 
 from pyadc.const import ArmingState, ResourceType
+# WS state bits (BITFLAG_STATE 0x3) → ArmingState
+_WS_BITS_TO_ARMING = {0: ArmingState.DISARMED, 1: ArmingState.ARMED_STAY, 2: ArmingState.ARMED_AWAY, 3: ArmingState.ARMED_NIGHT}
 from pyadc.models.base import AdcDeviceResource, _camel_to_snake
 
 
@@ -31,6 +33,14 @@ class Partition(AdcDeviceResource):
 
     resource_type: ClassVar[str] = ResourceType.PARTITION
     state: ArmingState = ArmingState.DISARMED
+
+    def apply_status_flags(self, new_state: int, flag_mask: int) -> None:
+        """Apply DeviceStatusFlags bitmask; bits 0-1 encode arming state."""
+        super().apply_status_flags(new_state, flag_mask)
+        if flag_mask & 0x3:  # BITFLAG_STATE
+            arming = _WS_BITS_TO_ARMING.get(new_state & 0x3)
+            if arming is not None:
+                self.state = arming
     desired_state: ArmingState | None = None
     uncleared_issues: bool = False
     force_bypass_available: bool = False

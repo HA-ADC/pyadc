@@ -135,10 +135,12 @@ class AdcClient:
             UnexpectedResponse: Any other non-200 status.
         """
         url = f"{base_url}{path}" if not path.startswith("http") else path
+        headers = self._build_headers(extra_headers)
+        log.debug("POST %s  AFG=%s", url, bool(self._afg_token))
         async with self._session.post(
             url,
             json=body or {},
-            headers=self._build_headers(extra_headers),
+            headers=headers,
         ) as resp:
             self._update_afg_from_response(resp)
             await self._check_response(resp)
@@ -149,9 +151,15 @@ class AdcClient:
 
     async def _check_response(self, resp: aiohttp.ClientResponse) -> None:
         """Raise appropriate exception for error HTTP status codes."""
-        if resp.status == 200:
+        if resp.status in (200, 201, 204):
             return
         if resp.status == 403:
+            body = ""
+            try:
+                body = await resp.text()
+            except Exception:
+                pass
+            log.debug("403 response body: %s", body[:500] if body else "(empty)")
             raise NotAuthorized(f"403 Forbidden: {resp.url}")
         if resp.status == 401:
             raise AuthenticationFailed(f"401 Unauthorized: {resp.url}")

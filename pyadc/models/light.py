@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Self
 
-from pyadc.const import LightState, ResourceType
+from pyadc.const import DeviceStatusFlags, LightState, ResourceType
 from pyadc.models.base import AdcDeviceResource, _camel_to_snake
 
 
@@ -22,6 +22,13 @@ class Light(AdcDeviceResource):
     light_color_format: str | None = None  # RGBW, RGB, HSV, WARM_TO_COOL
     rgb_color: tuple[int, int, int] | None = None
     color_temp: int | None = None
+
+    def apply_status_flags(self, new_state: int, flag_mask: int) -> None:
+        """Apply DeviceStatusFlags bitmask; maps OPEN bit to on/off state."""
+        super().apply_status_flags(new_state, flag_mask)
+        # OPEN (0x0001) doubles as "light is on" for light devices
+        if flag_mask & DeviceStatusFlags.OPEN:
+            self.state = LightState.ON if (new_state & DeviceStatusFlags.OPEN) else LightState.OFF
 
     @property
     def brightness_pct(self) -> int | None:

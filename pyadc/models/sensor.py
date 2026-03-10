@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Self
 
-from pyadc.const import DeviceType, ResourceType, SensorState
+from pyadc.const import DeviceType, DeviceStatusFlags, ResourceType, SensorState
 from pyadc.models.base import AdcDeviceResource, _camel_to_snake
 
 
@@ -15,6 +15,12 @@ class Sensor(AdcDeviceResource):
 
     resource_type: ClassVar[str] = ResourceType.SENSOR
     state: SensorState = SensorState.UNKNOWN
+
+    def apply_status_flags(self, new_state: int, flag_mask: int) -> None:
+        """Apply DeviceStatusFlags bitmask; bit 0 = 0→CLOSED, 1→OPEN."""
+        super().apply_status_flags(new_state, flag_mask)
+        if flag_mask & 0x3:  # BITFLAG_STATE
+            self.state = SensorState.OPEN if (new_state & 0x1) else SensorState.CLOSED
     device_type: DeviceType = DeviceType.CONTACT
 
     @property

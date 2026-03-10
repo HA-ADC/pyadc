@@ -59,7 +59,8 @@ class BaseController:
 
     def __init__(self, bridge: "AlarmBridge") -> None:
         self._bridge = bridge
-        self._devices: dict[str, Any] = {}  # {device_id: model_instance}
+        self._devices: dict[str, Any] = {}  # {resource_id: model_instance}
+        self._devices_by_short_id: dict[str, Any] = {}  # {numeric_suffix: model_instance}
 
         self._bridge.event_broker.subscribe(
             [EventBrokerTopic.RAW_RESOURCE_EVENT],
@@ -92,13 +93,18 @@ class BaseController:
             if not isinstance(items, list):
                 items = [items] if items else []
             new_devices: dict[str, Any] = {}
+            new_by_short: dict[str, Any] = {}
             for item in items:
                 try:
                     device = self._parse_device(item)
                     new_devices[device.resource_id] = device
+                    # WS messages use only the numeric suffix (e.g. "1203" from "104878280-1203")
+                    short_id = device.resource_id.rsplit("-", 1)[-1]
+                    new_by_short[short_id] = device
                 except Exception as err:
                     log.debug("Failed to parse %s device: %s", self.resource_type, err)
             self._devices = new_devices
+            self._devices_by_short_id = new_by_short
             return list(self._devices.values())
         except Exception as err:
             log.debug("Failed to fetch %s: %s", self.resource_type, err)
@@ -116,11 +122,17 @@ class BaseController:
         ws_msg = message.ws_message
 
         if isinstance(ws_msg, DeviceStatusUpdateWSMessage):
+            log.debug("DeviceStatusUpdate: device_id=%s new_state=%s flag_mask=%s", ws_msg.device_id, ws_msg.new_state, ws_msg.flag_mask)
             self._handle_status_update(ws_msg)
         elif isinstance(ws_msg, EventWSMessage):
+            log.debug("EventWSMessage: device_id=%s event_type=%s", ws_msg.device_id, ws_msg.event_type)
             self._handle_event(ws_msg)
         elif isinstance(ws_msg, PropertyChangeWSMessage):
             self._handle_property_change(ws_msg)
+
+    def _get_device_by_ws_id(self, ws_id: str) -> Any | None:
+        """Look up a device by WS message ID (short numeric suffix or full resource_id)."""
+        return self._devices.get(ws_id) or self._devices_by_short_id.get(ws_id)
 
     def _handle_status_update(self, msg: DeviceStatusUpdateWSMessage) -> None:
         """Apply a ``DeviceStatusFlags`` bitmask update to the matching device.
@@ -129,13 +141,13 @@ class BaseController:
         with the ``new_state`` and ``flag_mask`` from the WebSocket message,
         then publishes a ``RESOURCE_UPDATED`` event so subscribers refresh.
         """
-        device = self._devices.get(msg.device_id)
+        device = self._get_device_by_ws_id(msg.device_id)
         if device is None:
             return
         device.apply_status_flags(msg.new_state, msg.flag_mask)
         self._bridge.event_broker.publish(
             ResourceEventMessage(
-                device_id=msg.device_id,
+                device_id=device.resource_id,
                 device_type=self.resource_type,
             )
         )
@@ -149,7 +161,7 @@ class BaseController:
         the event is published (used when state must be inferred from separate
         property-change messages).
         """
-        device = self._devices.get(msg.device_id)
+        device = self._get_device_by_ws_id(msg.device_id)
         if device is None:
             return
 
@@ -158,7 +170,7 @@ class BaseController:
             device.state = new_state
             self._bridge.event_broker.publish(
                 ResourceEventMessage(
-                    device_id=msg.device_id,
+                    device_id=device.resource_id,
                     device_type=self.resource_type,
                 )
             )

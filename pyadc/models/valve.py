@@ -17,6 +17,12 @@ class WaterValve(AdcDeviceResource):
     state: ValveState = ValveState.UNKNOWN
     desired_state: ValveState | None = None
 
+    def apply_status_flags(self, new_state: int, flag_mask: int) -> None:
+        """Apply DeviceStatusFlags bitmask; bit 0 = 0→CLOSED, 1→OPEN."""
+        super().apply_status_flags(new_state, flag_mask)
+        if flag_mask & 0x3:
+            self.state = ValveState.OPEN if (new_state & 0x1) else ValveState.CLOSED
+
     @classmethod
     def from_json_api(cls, data: dict[str, Any]) -> Self:
         """Parse from JSON:API resource object."""

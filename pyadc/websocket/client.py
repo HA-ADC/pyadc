@@ -247,6 +247,7 @@ class WebSocketClient:
             msg = await self._queue.get()
             try:
                 self._bridge.event_broker.publish(RawResourceEventMessage(ws_message=msg))
+                log.debug("WS dispatched: type=%s", type(msg).__name__)
             except Exception as err:
                 log.error("Error dispatching WS message: %s", err)
             finally:

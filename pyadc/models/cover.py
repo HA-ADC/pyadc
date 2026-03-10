@@ -8,6 +8,9 @@ from typing import Any, ClassVar, Self
 from pyadc.const import CoverState, ResourceType
 from pyadc.models.base import AdcDeviceResource, _camel_to_snake
 
+# WS BITFLAG_STATE bits → CoverState
+_WS_BITS_TO_COVER = {0: CoverState.CLOSED, 1: CoverState.OPEN, 2: CoverState.OPENING, 3: CoverState.CLOSING}
+
 
 def _parse_cover(cls: type, data: dict[str, Any], resource_type: str) -> Any:
     """Shared parsing logic for cover devices."""
@@ -43,6 +46,14 @@ class GarageDoor(AdcDeviceResource):
     state: CoverState = CoverState.UNKNOWN
     desired_state: CoverState | None = None
 
+    def apply_status_flags(self, new_state: int, flag_mask: int) -> None:
+        """Apply DeviceStatusFlags bitmask; bits 0-1 encode cover position."""
+        super().apply_status_flags(new_state, flag_mask)
+        if flag_mask & 0x3:
+            cover = _WS_BITS_TO_COVER.get(new_state & 0x3)
+            if cover is not None:
+                self.state = cover
+
     @classmethod
     def from_json_api(cls, data: dict[str, Any]) -> Self:
         """Parse from JSON:API resource object."""
@@ -56,6 +67,14 @@ class Gate(AdcDeviceResource):
     resource_type: ClassVar[str] = ResourceType.GATE
     state: CoverState = CoverState.UNKNOWN
     desired_state: CoverState | None = None
+
+    def apply_status_flags(self, new_state: int, flag_mask: int) -> None:
+        """Apply DeviceStatusFlags bitmask; bits 0-1 encode cover position."""
+        super().apply_status_flags(new_state, flag_mask)
+        if flag_mask & 0x3:
+            cover = _WS_BITS_TO_COVER.get(new_state & 0x3)
+            if cover is not None:
+                self.state = cover
 
     @classmethod
     def from_json_api(cls, data: dict[str, Any]) -> Self:
