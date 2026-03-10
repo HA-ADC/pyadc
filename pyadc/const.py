@@ -13,7 +13,9 @@ from enum import IntEnum, IntFlag, StrEnum
 # ---------------------------------------------------------------------------
 
 URL_BASE = "https://www.alarm.com"
-LOGIN_URL = "https://www.alarm.com/login"
+LOGIN_URL = "https://www.alarm.com/login.aspx"
+# Login form uses ASP.NET cross-page postback: signInButton.PostBackUrl = "/Default.aspx"
+# CustomerDotNet is deployed under /web/, so the actual target is /web/Default.aspx
 FORM_SUBMIT_URL = "https://www.alarm.com/web/Default.aspx"
 API_URL_BASE = "https://www.alarm.com/web/api/"
 
@@ -68,6 +70,7 @@ class ResourceEventType(StrEnum):
     THERMOSTAT_MODE_CHANGED = "ThermostatModeChanged"
     THERMOSTAT_OFFSET = "ThermostatOffset"
     THERMOSTAT_SET_POINT_CHANGED = "ThermostatSetPointChanged"
+    DOOR_LEFT_OPEN = "DoorLeftOpen"
     DOOR_LEFT_OPEN_RESTORAL = "DoorLeftOpenRestoral"
     WATER_VALVE_OPENED = "WaterValveOpened"
     WATER_VALVE_CLOSED = "WaterValveClosed"
@@ -336,18 +339,22 @@ class DeviceType(IntEnum):
 
 
 class ResourceType:
-    """JSON:API resource type strings used in ADC REST endpoints."""
+    """REST API path segments matching actual RoutePrefix values in CustomerDotNet.
 
-    PARTITION = "devices/partition"
-    SENSOR = "devices/sensor"
-    LOCK = "devices/lock"
-    LIGHT = "devices/light"
-    THERMOSTAT = "devices/thermostat"
-    GARAGE_DOOR = "devices/garage-door"
-    GATE = "devices/gate"
-    WATER_VALVE = "devices/water-valve"
-    WATER_SENSOR = "devices/water-sensor"
-    IMAGE_SENSOR = "image-sensor/image-sensor"
-    CAMERA = "video/camera"
-    SYSTEM = "systems/system"
-    TROUBLE_CONDITION = "troubleConditions/trouble-condition"
+    Each value is the path after ``/web/api/`` as declared in the C# controller
+    ``[RoutePrefix]`` attribute (e.g. ``api/devices/partitions`` → ``devices/partitions``).
+    """
+
+    PARTITION = "devices/partitions"
+    SENSOR = "devices/sensors"
+    LOCK = "devices/locks"
+    LIGHT = "devices/lights"
+    THERMOSTAT = "devices/thermostats"
+    GARAGE_DOOR = "devices/garageDoors"
+    GATE = "devices/gates"
+    WATER_VALVE = "devices/waterValves"
+    WATER_SENSOR = "devices/waterSensors"
+    IMAGE_SENSOR = "video/smrfImages"  # SMRF (Smart Radio Motion Frame) image sensors
+    CAMERA = "devices/videoDevices"
+    SYSTEM = "systems/systems"
+    TROUBLE_CONDITION = "troubleConditions/troubleConditions"

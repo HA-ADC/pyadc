@@ -28,10 +28,10 @@ class PartitionController(BaseController):
     resource_type = ResourceType.PARTITION
     model_class = Partition
     _event_state_map = {
-        ResourceEventType.ArmedAway: ArmingState.ARMED_AWAY,
-        ResourceEventType.ArmedStay: ArmingState.ARMED_STAY,
-        ResourceEventType.ArmedNight: ArmingState.ARMED_NIGHT,
-        ResourceEventType.Disarmed: ArmingState.DISARMED,
+        ResourceEventType.ARMED_AWAY: ArmingState.ARMED_AWAY,
+        ResourceEventType.ARMED_STAY: ArmingState.ARMED_STAY,
+        ResourceEventType.ARMED_NIGHT: ArmingState.ARMED_NIGHT,
+        ResourceEventType.DISARMED: ArmingState.DISARMED,
     }
 
     async def arm_away(

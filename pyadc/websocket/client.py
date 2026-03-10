@@ -9,16 +9,17 @@ Implements a 3-task architecture:
 * **Keep-alive task** — sends periodic WebSocket pings to prevent idle
   timeouts.
 
-Connection URL format: ``<endpoint>?f=1&auth=<jwt>&ver=<A|B>``
+Connection URL format: ``<endpoint>?f=1&auth=<token>``
+
+The ``<token>`` value returned by the ``api/websockets/token`` endpoint is
+produced by ``WebsocketAuthUtils.IssueToken()``, which appends ``&ver=<N>``
+to the JWT automatically — so the client does **not** add a separate
+``ver=`` parameter.
 
 The ``?f=1`` flag instructs the ADC server to send an immediate close-frame
 (code 1008) when the JWT is invalid or expired, rather than silently
 hanging.  On close code 1008 the reader task automatically re-authenticates
 via :meth:`~pyadc.auth.AuthController.login` before reconnecting.
-
-JWT key rotation: ADC occasionally rotates the server-side JWT signing key.
-:meth:`WebSocketClient._connect` tries ``ver=A`` first, then ``ver=B``, so
-the correct key version is discovered without requiring user intervention.
 """
 
 from __future__ import annotations
@@ -155,30 +156,25 @@ class WebSocketClient:
         """
         Acquire a WS token and connect.
 
-        Tries ver=A first; falls back to ver=B to handle JWT key rotation.
-        Uses ?f=1 so an expired token causes an immediate 1008 close instead
-        of a silent hang.
+        ``IssueToken()`` on the backend returns ``<jwt>&ver=<version>``, so the
+        ``ver`` parameter is already embedded in the token string itself.  The
+        ``?f=1`` flag instructs the server to send an immediate close-frame
+        (code 1008) when the JWT is invalid or expired instead of silently hanging.
         """
         endpoint, token = await self._bridge.auth.get_websocket_token()
 
-        last_err: Exception | None = None
-        for ver in ("A", "B"):
-            url = f"{endpoint}?f=1&auth={token}&ver={ver}"
-            try:
-                ws = await self._bridge._session.ws_connect(
-                    url,
-                    heartbeat=WS_KEEP_ALIVE_INTERVAL_S,
-                    receive_timeout=120,
-                )
-                log.debug("WebSocket connected (ver=%s)", ver)
-                return ws
-            except Exception as err:
-                log.debug("WebSocket connect failed (ver=%s): %s", ver, err)
-                last_err = err
-
-        raise ConnectionError(
-            f"WebSocket connection failed with both ver=A and ver=B: {last_err}"
-        )
+        # token already contains "&ver=X" appended by WebsocketAuthUtils.IssueToken()
+        url = f"{endpoint}?f=1&auth={token}"
+        try:
+            ws = await self._bridge._session.ws_connect(
+                url,
+                heartbeat=WS_KEEP_ALIVE_INTERVAL_S,
+                receive_timeout=120,
+            )
+            log.debug("WebSocket connected")
+            return ws
+        except Exception as err:
+            raise ConnectionError(f"WebSocket connection failed: {err}") from err
 
     async def _reader_task(self) -> NoReturn:
         """Maintain WS connection and enqueue parsed messages."""

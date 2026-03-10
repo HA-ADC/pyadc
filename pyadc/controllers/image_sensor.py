@@ -16,7 +16,7 @@ class ImageSensorController(BaseController):
     resource_type = ResourceType.IMAGE_SENSOR
     model_class = ImageSensor
     _event_state_map = {
-        ResourceEventType.ImageSensorUpload: None,  # triggers event but no simple state change
+        ResourceEventType.IMAGE_SENSOR_UPLOAD: None,  # triggers event but no simple state change
     }
 
     async def peek_in_now(self, sensor_id: str) -> None:

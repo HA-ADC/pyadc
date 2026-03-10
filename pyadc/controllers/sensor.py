@@ -14,11 +14,11 @@ class SensorController(BaseController):
     resource_type = ResourceType.SENSOR
     model_class = Sensor
     _event_state_map = {
-        ResourceEventType.Opened: SensorState.OPEN,
-        ResourceEventType.Closed: SensorState.CLOSED,
-        ResourceEventType.OpenedClosed: SensorState.OPENED_CLOSED,
-        ResourceEventType.DoorLeftOpen: SensorState.OPEN,
-        ResourceEventType.DoorLeftOpenRestoral: SensorState.CLOSED,
+        ResourceEventType.OPENED: SensorState.OPEN,
+        ResourceEventType.CLOSED: SensorState.CLOSED,
+        ResourceEventType.OPENED_CLOSED: SensorState.OPENED_CLOSED,
+        ResourceEventType.DOOR_LEFT_OPEN: SensorState.OPEN,
+        ResourceEventType.DOOR_LEFT_OPEN_RESTORAL: SensorState.CLOSED,
     }
 
     async def bypass(self, sensor_id: str) -> None:

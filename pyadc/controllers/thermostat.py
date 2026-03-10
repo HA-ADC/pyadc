@@ -13,9 +13,9 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from pyadc.const import ResourceEventType, ResourceType
+from pyadc.const import ResourceEventType, ResourceType, ThermostatFanMode, ThermostatTemperatureMode
 from pyadc.controllers.base import BaseController
-from pyadc.models.thermostat import Thermostat, ThermostatFanMode, ThermostatState
+from pyadc.models.thermostat import Thermostat
 from pyadc.websocket.messages import PropertyChangeWSMessage
 
 if TYPE_CHECKING:
@@ -43,16 +43,16 @@ class ThermostatController(BaseController):
     resource_type = ResourceType.THERMOSTAT
     model_class = Thermostat
     _event_state_map = {
-        ResourceEventType.ThermostatModeChanged: None,      # handled via fetch or property
-        ResourceEventType.ThermostatFanModeChanged: None,
-        ResourceEventType.ThermostatSetPointChanged: None,
-        ResourceEventType.ThermostatOffset: None,
+        ResourceEventType.THERMOSTAT_MODE_CHANGED: None,
+        ResourceEventType.THERMOSTAT_FAN_MODE_CHANGED: None,
+        ResourceEventType.THERMOSTAT_SET_POINT_CHANGED: None,
+        ResourceEventType.THERMOSTAT_OFFSET: None,
     }
 
     async def set_state(
         self,
         thermostat_id: str,
-        mode: ThermostatState | None = None,
+        mode: ThermostatTemperatureMode | None = None,
         fan_mode: ThermostatFanMode | None = None,
         heat_setpoint: float | None = None,
         cool_setpoint: float | None = None,

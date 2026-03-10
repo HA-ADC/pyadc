@@ -4,7 +4,8 @@ from typing import TYPE_CHECKING
 
 from pyadc.const import ResourceEventType, ResourceType
 from pyadc.controllers.base import BaseController
-from pyadc.models.water_valve import WaterValve, WaterValveState
+from pyadc.const import ValveState
+from pyadc.models.valve import WaterValve
 
 if TYPE_CHECKING:
     from pyadc import AlarmBridge
@@ -16,8 +17,8 @@ class ValveController(BaseController):
     resource_type = ResourceType.WATER_VALVE
     model_class = WaterValve
     _event_state_map = {
-        ResourceEventType.Opened: WaterValveState.OPEN,
-        ResourceEventType.Closed: WaterValveState.CLOSED,
+        ResourceEventType.WATER_VALVE_OPENED: ValveState.OPEN,
+        ResourceEventType.WATER_VALVE_CLOSED: ValveState.CLOSED,
     }
 
     async def open(self, valve_id: str) -> None:

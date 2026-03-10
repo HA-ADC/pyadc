@@ -14,8 +14,8 @@ class LockController(BaseController):
     resource_type = ResourceType.LOCK
     model_class = Lock
     _event_state_map = {
-        ResourceEventType.DoorLocked: LockState.LOCKED,
-        ResourceEventType.DoorUnlocked: LockState.UNLOCKED,
+        ResourceEventType.DOOR_LOCKED: LockState.LOCKED,
+        ResourceEventType.DOOR_UNLOCKED: LockState.UNLOCKED,
     }
 
     async def lock(self, lock_id: str) -> None:

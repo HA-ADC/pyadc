@@ -21,6 +21,7 @@ from pyadc.const import (
     KEEP_ALIVE_INTERVAL_S,
     LOGIN_URL,
     OtpType,
+    URL_BASE,
 )
 from pyadc.exceptions import (
     AuthenticationFailed,
@@ -35,12 +36,6 @@ if TYPE_CHECKING:
     from pyadc.client import AdcClient
 
 log = logging.getLogger(__name__)
-
-# ASP.NET form field names
-VIEWSTATE_FIELD = "__VIEWSTATE"
-VIEWSTATEGENERATOR_FIELD = "__VIEWSTATEGENERATOR"
-EVENTVALIDATION_FIELD = "__EVENTVALIDATION"
-PREVIOUSPAGE_FIELD = "__PREVIOUSPAGE"
 
 TWO_FACTOR_PATH = "engines/twoFactorAuthentication/twoFactorAuthentications"
 
@@ -93,6 +88,11 @@ class AuthController:
         self._keep_alive_url: str = ""
         self._user_id: str = ""
         self._keep_alive_task: asyncio.Task | None = None
+        self._form_fields: dict[str, str] = {}
+        self._form_submit_url: str = FORM_SUBMIT_URL
+        self._username_field: str | None = None
+        self._password_field: str | None = None
+        self._submit_field: str | None = None
 
     async def login(self) -> None:
         """Execute the full 4-step Alarm.com login flow.
@@ -121,41 +121,111 @@ class AuthController:
         # Step 4: Check 2FA status; raise OtpRequired if needed
         await self._check_two_factor()
 
-    async def _scrape_login_page(self) -> dict[str, str]:
-        """GET login page and extract hidden form fields."""
-        async with self._session.get(LOGIN_URL) as resp:
+    async def _scrape_login_page(self) -> None:
+        """GET login page and dynamically extract ALL form field names and values.
+
+        Follows redirects so the final URL (which is the POST target) is captured.
+        Field names are ASP.NET-generated and must be read from the rendered HTML —
+        they cannot be hardcoded because they depend on the NamingContainer hierarchy.
+        """
+        async with self._session.get(LOGIN_URL, allow_redirects=True) as resp:
             html = await resp.text()
+
         soup = BeautifulSoup(html, "html.parser")
-        fields = {}
-        for field_name in [VIEWSTATE_FIELD, VIEWSTATEGENERATOR_FIELD, EVENTVALIDATION_FIELD, PREVIOUSPAGE_FIELD]:
-            tag = soup.find("input", {"name": field_name})
-            if tag:
-                fields[field_name] = tag.get("value", "")
-        self._form_fields = fields
-        return fields
+        form = soup.find("form", {"id": "form1"}) or soup.find("form")
+        if not form:
+            raise AuthenticationFailed("Could not find login form on page")
+
+        # Extract ALL input fields — ASP.NET VIEWSTATE and visible inputs alike
+        self._form_fields = {}
+        for inp in form.find_all("input"):
+            name = inp.get("name")
+            if not name:
+                continue
+            self._form_fields[name] = inp.get("value", "")
+
+        # Discover rendered field names dynamically (ends-with match on control ID)
+        self._username_field = next(
+            (k for k in self._form_fields if k.endswith("txtUsername") or k.endswith("txtUserName")),
+            None,
+        )
+        self._password_field = next(
+            (k for k in self._form_fields if k.endswith("txtPassword")),
+            None,
+        )
+        self._submit_field = next(
+            (k for k in self._form_fields if k.endswith("butLogin") or k.endswith("signInButton")),
+            None,
+        )
+
+        # The signInButton uses ASP.NET cross-page postback targeting /Default.aspx.
+        # CustomerDotNet is deployed under /web/, so the actual POST target is FORM_SUBMIT_URL.
+        self._form_submit_url = FORM_SUBMIT_URL
+
+        log.debug(
+            "Login page scraped: username_field=%s, password_field=%s, submit_field=%s",
+            self._username_field,
+            self._password_field,
+            self._submit_field,
+        )
+
+        if not self._username_field or not self._password_field:
+            raise AuthenticationFailed(
+                f"Could not locate username/password inputs on login page. "
+                f"Fields found: {list(self._form_fields.keys())}"
+            )
 
     async def _submit_credentials(self) -> None:
-        """POST credentials to Default.aspx. Detect failure by redirect URL."""
-        data = {
-            **self._form_fields,
-            "ctl00$ContentPlaceHolder1$loginform$txtUserName": self._username,
-            "txtPassword": self._password,
-            "ctl00$ContentPlaceHolder1$loginform$signInButton": "Sign In",
-        }
+        """POST credentials to the login form. Detect failure by redirect URL."""
+        data = dict(self._form_fields)
+        data[self._username_field] = self._username
+        data[self._password_field] = self._password
+        if self._submit_field:
+            data[self._submit_field] = "Login"
+        # JavaScriptTest defaults to "0" in the hidden input; JavaScript normally sets
+        # it to "1" in the browser. If it stays "0", the server rejects the login.
+        if "JavaScriptTest" in data:
+            data["JavaScriptTest"] = "1"
+        # IsFromNewSite must be "1" to trigger MainProcessAuthentication (the normal login flow).
+        # The server skips credential processing if this field is not "1".
+        if "IsFromNewSite" in data:
+            data["IsFromNewSite"] = "1"
+
+        log.debug("Submitting login POST to %s", self._form_submit_url)
         async with self._session.post(
-            FORM_SUBMIT_URL,
+            self._form_submit_url,
             data=data,
             headers={"User-Agent": "Mozilla/5.0", "Referrer": LOGIN_URL},
-            allow_redirects=True,
+            allow_redirects=False,
         ) as resp:
-            final_url = str(resp.url)
-            if "m=login_fail" in final_url:
+            location = resp.headers.get("Location", "")
+            # Follow the redirect to complete the login sequence and accumulate cookies
+            if resp.status in (301, 302, 303, 307, 308) and location:
+                async with self._session.get(
+                    location if location.startswith("http") else f"{URL_BASE}{location}",
+                    allow_redirects=True,
+                ) as final_resp:
+                    final_url = str(final_resp.url)
+                    body = await final_resp.text()
+                    log.debug("Login redirect chain: final_url=%s", final_url)
+            else:
+                final_url = str(resp.url)
+                body = await resp.text()
+            if "m=login_fail" in final_url or "m=login_fail" in body:
                 raise AuthenticationFailed("Invalid username or password")
             if "m=LockedOut" in final_url:
                 raise AuthenticationFailed("Account is locked out")
-            # Extract AFG from cookies
-            if afg := resp.cookies.get("afg"):
+            if "/login" in final_url and "/web/" not in final_url:
+                log.warning("Login POST returned to login page — likely failed silently")
+            # Extract AFG anti-forgery token from the response cookies
+            afg = resp.cookies.get("afg") or self._session.cookie_jar.filter_cookies(
+                resp.url
+            ).get("afg")
+            if afg:
                 self._client._afg_token = afg.value
+                log.debug("AFG token acquired after login")
+            else:
+                log.warning("No AFG token in cookies after login — session may not be established")
 
     async def _load_user_data(self) -> None:
         """Load identity, profile, and dealer data in parallel."""
@@ -249,15 +319,19 @@ class AuthController:
     async def get_websocket_token(self) -> tuple[str, str]:
         """Obtain a fresh WebSocket endpoint URL and short-lived JWT token.
 
+        The ``websockets/token`` endpoint returns a standard JSON response
+        (not JSON:API): ``{"value": "<jwt>", "metaData": {"endpoint": "wss://..."}}``
+
         Returns:
             A ``(endpoint_url, token)`` tuple.  The token is valid for a short
             window; use it immediately to open the WebSocket connection.
         """
-        resp = await self._client.get("websockets/token")
-        data = resp.get("data", {})
-        attrs = data.get("attributes", {}) if isinstance(data, dict) else {}
-        endpoint = attrs.get("websocketEndpoint", attrs.get("websocket_endpoint", ""))
-        token = attrs.get("token", "")
+        resp = await self._client.get(
+            "websockets/token",
+            extra_headers={"Accept": "application/json"},
+        )
+        endpoint = resp.get("metaData", {}).get("endpoint", "")
+        token = resp.get("value", "")
         return endpoint, token
 
     async def start_keep_alive(self) -> None:

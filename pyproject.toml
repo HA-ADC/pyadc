@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=68", "setuptools-scm"]
-build-backend = "setuptools.backends.legacy:build"
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyadc"
@@ -8,12 +8,11 @@ version = "0.1.0"
 description = "Python library for the Alarm.com API"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = "MIT"
 keywords = ["alarm.com", "home-automation", "security"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [

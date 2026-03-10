@@ -25,6 +25,8 @@ log = logging.getLogger(__name__)
 
 STANDARD_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    # Device endpoints use NJsonApi and return JSON:API format for this Accept value.
+    # Non-device endpoints (e.g. websocket token) override this per-call.
     "Accept": "application/vnd.api+json",
     "Accept-Language": "en-US,en;q=0.9",
     "Referrer": "https://www.alarm.com/web/system/home",
@@ -35,7 +37,7 @@ class AdcClient:
     """Async REST client for the Alarm.com JSON:API.
 
     Maintains the ``afg`` (anti-forgery) token extracted from response
-    cookies and injects it as the ``Ajaxrequestuniquekey`` request header
+    cookies and injects it as the ``AjaxRequestUniqueKey`` request header
     required by every authenticated API call.
 
     Attributes:
@@ -65,7 +67,7 @@ class AdcClient:
         """
         headers = {**STANDARD_HEADERS}
         if self._afg_token:
-            headers["Ajaxrequestuniquekey"] = self._afg_token
+            headers["AjaxRequestUniqueKey"] = self._afg_token
         if extra:
             headers.update(extra)
         return headers

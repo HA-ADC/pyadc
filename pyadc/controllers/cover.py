@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING
 
 from pyadc.const import ResourceEventType, ResourceType
 from pyadc.controllers.base import BaseController
-from pyadc.models.garage_door import GarageDoor, GarageDoorState
-from pyadc.models.gate import Gate, GateState
+from pyadc.const import CoverState
+from pyadc.models.cover import GarageDoor, Gate
 
 if TYPE_CHECKING:
     from pyadc import AlarmBridge
@@ -17,8 +17,8 @@ class GarageDoorController(BaseController):
     resource_type = ResourceType.GARAGE_DOOR
     model_class = GarageDoor
     _event_state_map = {
-        ResourceEventType.Opened: GarageDoorState.OPEN,
-        ResourceEventType.Closed: GarageDoorState.CLOSED,
+        ResourceEventType.GARAGE_DOOR_OPENED: CoverState.OPEN,
+        ResourceEventType.GARAGE_DOOR_CLOSED: CoverState.CLOSED,
     }
 
     async def open(self, device_id: str) -> None:
@@ -42,8 +42,8 @@ class GateController(BaseController):
     resource_type = ResourceType.GATE
     model_class = Gate
     _event_state_map = {
-        ResourceEventType.Opened: GateState.OPEN,
-        ResourceEventType.Closed: GateState.CLOSED,
+        ResourceEventType.OPENED: CoverState.OPEN,
+        ResourceEventType.CLOSED: CoverState.CLOSED,
     }
 
     async def open(self, device_id: str) -> None:

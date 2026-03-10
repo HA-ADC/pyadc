@@ -21,8 +21,8 @@ class LightController(BaseController):
     resource_type = ResourceType.LIGHT
     model_class = Light
     _event_state_map = {
-        ResourceEventType.LightTurnedOn: LightState.ON,
-        ResourceEventType.LightTurnedOff: LightState.OFF,
+        ResourceEventType.LIGHT_TURNED_ON: LightState.ON,
+        ResourceEventType.LIGHT_TURNED_OFF: LightState.OFF,
         # SwitchLevelChanged is handled separately in _handle_property_change
     }
 

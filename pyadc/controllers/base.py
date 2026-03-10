@@ -86,9 +86,11 @@ class BaseController:
         """Fetch all devices of this type from the REST API."""
         try:
             resp = await self._bridge.client.get(self.resource_type)
+            # Device endpoints use NJsonApi (Accept: application/vnd.api+json)
+            # and return JSON:API format: {"data": [{id, type, attributes}, ...]}
             items = resp.get("data", [])
-            if isinstance(items, dict):
-                items = [items]
+            if not isinstance(items, list):
+                items = [items] if items else []
             new_devices: dict[str, Any] = {}
             for item in items:
                 try:
