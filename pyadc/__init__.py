@@ -25,6 +25,7 @@ from pyadc.const import (
     ThermostatTemperatureMode,
     ValveState,
 )
+from pyadc.controllers.camera import CameraController
 from pyadc.controllers.cover import GarageDoorController, GateController
 from pyadc.controllers.image_sensor import ImageSensorController
 from pyadc.controllers.light import LightController
@@ -68,6 +69,7 @@ class AlarmBridge:
         client: Low-level REST client (rarely needed directly).
         auth: Authentication controller.
         websocket: WebSocket client.
+        cameras: :class:`~pyadc.controllers.camera.CameraController`
         partitions: :class:`~pyadc.controllers.partition.PartitionController`
         sensors: :class:`~pyadc.controllers.sensor.SensorController`
         locks: :class:`~pyadc.controllers.lock.LockController`
@@ -119,6 +121,7 @@ class AlarmBridge:
         self.websocket = WebSocketClient(self)
 
         # Device controllers
+        self.cameras = CameraController(self)
         self.partitions = PartitionController(self)
         self.sensors = SensorController(self)
         self.locks = LockController(self)
@@ -156,6 +159,7 @@ class AlarmBridge:
         # Fetch all device types in parallel
         await asyncio.gather(
             self.systems.fetch_all(),
+            self.cameras.fetch_all(),
             self.partitions.fetch_all(),
             self.sensors.fetch_all(),
             self.locks.fetch_all(),
@@ -196,6 +200,7 @@ class AlarmBridge:
         """
         await asyncio.gather(
             self.systems.fetch_all(),
+            self.cameras.fetch_all(),
             self.partitions.fetch_all(),
             self.sensors.fetch_all(),
             self.locks.fetch_all(),

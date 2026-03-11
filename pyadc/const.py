@@ -390,6 +390,6 @@ class ResourceType:
     WATER_VALVE = "devices/waterValves"
     WATER_SENSOR = "devices/waterSensors"
     IMAGE_SENSOR = "video/smrfImages"  # SMRF (Smart Radio Motion Frame) image sensors
-    CAMERA = "devices/videoDevices"
+    CAMERA = "video/devices/cameras"
     SYSTEM = "systems/systems"
     TROUBLE_CONDITION = "troubleConditions/troubleConditions"
