@@ -88,7 +88,7 @@ class BaseController:
     async def fetch_all(self) -> list[Any]:
         """Fetch all devices of this type from the REST API."""
         try:
-            resp = await self._bridge.client.get(self.resource_type)
+            resp = await self._get(self.resource_type)
             # Device endpoints use NJsonApi (Accept: application/vnd.api+json)
             # and return JSON:API format: {"data": [{id, type, attributes}, ...]}
             items = resp.get("data", [])
@@ -204,6 +204,15 @@ class BaseController:
             log.info("403 on POST %s — re-authenticating and retrying", path)
             await self._bridge.auth.login()
             return await self._bridge.client.post(path, body or {})
+
+    async def _get(self, path: str) -> dict:
+        """GET with automatic re-login retry on 403 (ASP.NET session expiry)."""
+        try:
+            return await self._bridge.client.get(path)
+        except NotAuthorized:
+            log.info("403 on GET %s — re-authenticating and retrying", path)
+            await self._bridge.auth.login()
+            return await self._bridge.client.get(path)
 
     def _handle_property_change(self, msg: PropertyChangeWSMessage) -> None:
         """Handle numeric property changes. Subclasses override as needed."""

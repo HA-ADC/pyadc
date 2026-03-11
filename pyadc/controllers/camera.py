@@ -35,7 +35,7 @@ class CameraController(BaseController):
         """
         device_id = camera.resource_id
         try:
-            resp = await self._bridge.client.get(f"video/snapshots/{device_id}")
+            resp = await self._get(f"video/snapshots/{device_id}")
         except Exception as exc:
             log.debug("Failed to fetch snapshot for camera %s: %s", device_id, exc)
             return None
@@ -56,7 +56,7 @@ class CameraController(BaseController):
         """
         source_id = camera.live_video_source_id or camera.resource_id
         try:
-            resp = await self._bridge.client.get(
+            resp = await self._get(
                 f"video/videoSources/liveVideoSources/{source_id}"
             )
         except Exception as exc:
