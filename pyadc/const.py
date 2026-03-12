@@ -291,11 +291,14 @@ class CoverState(IntEnum):
 
 
 class ValveState(IntEnum):
-    """State of a water valve device."""
+    """State of a water valve device.
 
-    OPEN = 1
-    CLOSED = 2
-    UNKNOWN = 3
+    Values match C# WaterValveStatusEnum: Unknown=0, Closed=1, Open=2.
+    """
+
+    UNKNOWN = 0
+    CLOSED = 1
+    OPEN = 2
 
 
 class SensorState(IntEnum):
