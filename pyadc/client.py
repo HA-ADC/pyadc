@@ -59,6 +59,7 @@ class AdcClient:
         """
         self._session = session
         self._afg_token: str = ""
+        self._mfa_cookie: str = ""  # twoFactorAuthenticationId — injected into every request
         self._api_url_base: str = f"{base_url}/web/api/"
         self._referrer: str = f"{base_url}/web/system/home"
 
@@ -80,10 +81,31 @@ class AdcClient:
         return headers
 
     def _update_afg_from_response(self, response: aiohttp.ClientResponse) -> None:
-        """Extract AFG anti-forgery token from response cookies."""
+        """Extract AFG anti-forgery token and MFA cookie from response cookies."""
         cookies = response.cookies
         if afg := cookies.get("afg"):
             self._afg_token = afg.value
+        # Check response Set-Cookie header first
+        mfa_value = cookies.get("twoFactorAuthenticationId")
+        if mfa_value and mfa_value.value:
+            if mfa_value.value != self._mfa_cookie:
+                log.debug("Updated MFA cookie from response Set-Cookie header")
+                self._mfa_cookie = mfa_value.value
+        else:
+            # Fallback: aiohttp stores domain-scoped cookies in the jar even when
+            # they don't appear on response.cookies — check jar against response URL
+            try:
+                jar_cookies = self._session.cookie_jar.filter_cookies(response.url)
+                jar_mfa = jar_cookies.get("twoFactorAuthenticationId")
+                if jar_mfa and jar_mfa.value and jar_mfa.value != self._mfa_cookie:
+                    log.debug("Updated MFA cookie from session cookie jar")
+                    self._mfa_cookie = jar_mfa.value
+            except Exception:
+                pass
+
+    def _mfa_cookies(self) -> dict[str, str] | None:
+        """Return the MFA cookie dict to inject, or None if not set."""
+        return {"twoFactorAuthenticationId": self._mfa_cookie} if self._mfa_cookie else None
 
     async def get(
         self,
@@ -112,7 +134,7 @@ class AdcClient:
         """
         effective_base = base_url if base_url is not None else self._api_url_base
         url = f"{effective_base}{path}" if not path.startswith("http") else path
-        async with self._session.get(url, headers=self._build_headers(extra_headers)) as resp:
+        async with self._session.get(url, headers=self._build_headers(extra_headers), cookies=self._mfa_cookies()) as resp:
             self._update_afg_from_response(resp)
             await self._check_response(resp)
             return await resp.json(content_type=None)
@@ -152,6 +174,7 @@ class AdcClient:
             url,
             json=body or {},
             headers=headers,
+            cookies=self._mfa_cookies(),
         ) as resp:
             self._update_afg_from_response(resp)
             await self._check_response(resp)

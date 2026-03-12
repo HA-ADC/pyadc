@@ -84,7 +84,9 @@ class AuthController:
         self._session = session
         self._username = username
         self._password = password
-        self.mfa_cookie: str = mfa_cookie
+        self._mfa_cookie: str = mfa_cookie
+        if mfa_cookie:
+            self._client._mfa_cookie = mfa_cookie
         self._keep_alive_url: str = ""
         self._user_id: str = ""
         self._keep_alive_task: asyncio.Task | None = None
@@ -95,6 +97,17 @@ class AuthController:
         self._username_field: str | None = None
         self._password_field: str | None = None
         self._submit_field: str | None = None
+
+    @property
+    def mfa_cookie(self) -> str:
+        """Return the stored MFA cookie."""
+        return self._mfa_cookie
+
+    @mfa_cookie.setter
+    def mfa_cookie(self, value: str) -> None:
+        """Set MFA cookie and keep the HTTP client in sync."""
+        self._mfa_cookie = value
+        self._client._mfa_cookie = value
 
     async def login(self) -> None:
         """Execute the full 4-step Alarm.com login flow.
@@ -130,7 +143,8 @@ class AuthController:
         Field names are ASP.NET-generated and must be read from the rendered HTML —
         they cannot be hardcoded because they depend on the NamingContainer hierarchy.
         """
-        async with self._session.get(self._login_url, allow_redirects=True) as resp:
+        mfa_cookies = {"twoFactorAuthenticationId": self._mfa_cookie} if self._mfa_cookie else None
+        async with self._session.get(self._login_url, allow_redirects=True, cookies=mfa_cookies) as resp:
             html = await resp.text()
 
         soup = BeautifulSoup(html, "html.parser")
@@ -194,10 +208,13 @@ class AuthController:
             data["IsFromNewSite"] = "1"
 
         log.debug("Submitting login POST to %s", self._form_submit_url)
+        # Inject twoFactorAuthenticationId so the server recognises this as a trusted device
+        mfa_cookies = {"twoFactorAuthenticationId": self._mfa_cookie} if self._mfa_cookie else None
         async with self._session.post(
             self._form_submit_url,
             data=data,
             headers={"User-Agent": "Mozilla/5.0", "Referrer": self._login_url},
+            cookies=mfa_cookies,
             allow_redirects=False,
         ) as resp:
             location = resp.headers.get("Location", "")
@@ -206,6 +223,7 @@ class AuthController:
                 async with self._session.get(
                     location if location.startswith("http") else f"{self._base_url}{location}",
                     allow_redirects=True,
+                    cookies=mfa_cookies,
                 ) as final_resp:
                     final_url = str(final_resp.url)
                     body = await final_resp.text()
@@ -267,9 +285,11 @@ class AuthController:
 
         data = resp.get("data", {})
         attrs = data.get("attributes", {}) if isinstance(data, dict) else {}
+        log.debug("_check_two_factor attrs: %s", attrs)
 
         # Check if current device is trusted
-        trusted = attrs.get("isTrustedDevice", attrs.get("is_trusted_device", False))
+        trusted = attrs.get("isCurrentDeviceTrusted", attrs.get("is_current_device_trusted", False))
+        log.debug("_check_two_factor: isCurrentDeviceTrusted=%s otp_mask=%s", trusted, attrs.get("enabledTwoFactorTypes"))
         if trusted:
             return
 
@@ -281,42 +301,80 @@ class AuthController:
     async def send_otp_sms(self) -> None:
         """Trigger Alarm.com to send an OTP code via SMS to the account's phone."""
         await self._client.post(
-            f"{TWO_FACTOR_PATH}/{self._user_id}/sendTwoFactorAuthenticationCodeViaSms"
+            f"{TWO_FACTOR_PATH}/{self._user_id}/sendTwoFactorAuthenticationCodeViaSms",
+            extra_headers={"Accept": "application/json"},
         )
 
     async def send_otp_email(self) -> None:
         """Trigger Alarm.com to send an OTP code via e-mail to the account address."""
         await self._client.post(
-            f"{TWO_FACTOR_PATH}/{self._user_id}/sendTwoFactorAuthenticationCodeViaEmail"
+            f"{TWO_FACTOR_PATH}/{self._user_id}/sendTwoFactorAuthenticationCodeViaEmail",
+            extra_headers={"Accept": "application/json"},
         )
 
-    async def verify_otp(self, code: str) -> str:
+    async def verify_otp(self, code: str, otp_type: int = 0) -> str:
         """Submit the OTP code to complete the two-factor challenge.
 
         Args:
-            code: The numeric code received via SMS or e-mail.
+            code: The numeric code received via SMS, e-mail, or authenticator app.
+            otp_type: The OtpType integer value used to request the code
+                (2=SMS, 4=email, 1=app).  Must match what was sent.
 
         Returns:
             The ``twoFactorAuthenticationId`` cookie value.  Store this as
             ``mfa_cookie`` to skip future OTP challenges on this device.
-        """
-        resp = await self._client.post(
-            f"{TWO_FACTOR_PATH}/{self._user_id}/verifyTwoFactorCode",
-            {"twoFactorAuthenticationCode": code},
-        )
-        # Extract MFA cookie from response data
-        data = resp.get("data", {})
-        attrs = data.get("attributes", {}) if isinstance(data, dict) else {}
-        mfa_cookie = attrs.get("twoFactorAuthenticationId", "")
-        self.mfa_cookie = mfa_cookie
-        return mfa_cookie
 
-    async def trust_device(self) -> None:
+        Raises:
+            AuthenticationFailed: HTTP 423 — code was wrong or has expired.
+        """
+        from pyadc.exceptions import UnexpectedResponse  # avoid circular at top level
+        try:
+            await self._client.post(
+                f"{TWO_FACTOR_PATH}/{self._user_id}/verifyTwoFactorCode",
+                {"code": code, "typeOf2FA": otp_type},
+                extra_headers={"Accept": "application/json"},
+            )
+        except UnexpectedResponse as exc:
+            if "423" in str(exc):
+                raise AuthenticationFailed(
+                    "Verification code is incorrect or has expired."
+                ) from exc
+            raise
+        # ADC sets twoFactorAuthenticationId as an HTTP response cookie.
+        # _update_afg_from_response (called inside client.post) already captured
+        # it into self._client._mfa_cookie — sync it back to self.mfa_cookie.
+        mfa_cookie = self._client._mfa_cookie
+        if mfa_cookie:
+            self._mfa_cookie = mfa_cookie  # update backing field without re-pushing to client
+            log.debug("MFA cookie captured from verifyTwoFactorCode response: len=%d", len(mfa_cookie))
+        else:
+            log.warning("verifyTwoFactorCode response did not set twoFactorAuthenticationId cookie")
+        return self._mfa_cookie
+
+    async def trust_device(self, device_name: str = "pyadc HA integration") -> None:
         """Register the current device as trusted so future logins skip OTP."""
         await self._client.post(
             f"{TWO_FACTOR_PATH}/{self._user_id}/trustTwoFactorDevice",
-            {"twoFactorAuthenticationId": self.mfa_cookie},
+            {"deviceName": device_name},
+            extra_headers={"Accept": "application/json"},
         )
+        # The server sets twoFactorAuthenticationId after trustTwoFactorDevice
+        if self._client._mfa_cookie:
+            self._mfa_cookie = self._client._mfa_cookie
+            log.info("trust_device: MFA cookie captured (len=%d)", len(self._mfa_cookie))
+        else:
+            # Last resort: scan entire cookie jar
+            try:
+                for cookie in self._client._session.cookie_jar:
+                    if cookie.key == "twoFactorAuthenticationId" and cookie.value:
+                        self._mfa_cookie = cookie.value
+                        self._client._mfa_cookie = cookie.value
+                        log.info("trust_device: MFA cookie from jar scan (len=%d)", len(self._mfa_cookie))
+                        break
+            except Exception:
+                pass
+            if not self._mfa_cookie:
+                log.warning("trust_device: twoFactorAuthenticationId cookie not found after trust call")
 
     async def get_websocket_token(self) -> tuple[str, str]:
         """Obtain a fresh WebSocket endpoint URL and short-lived JWT token.

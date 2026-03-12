@@ -117,6 +117,8 @@ class AlarmBridge:
         # Core infrastructure
         self.event_broker = EventBroker()
         self.client = AdcClient(session, base_url=base_url)
+        if mfa_cookie or two_factor_cookie:
+            self.client._mfa_cookie = mfa_cookie or two_factor_cookie
         self.auth = AuthController(
             client=self.client,
             session=session,
