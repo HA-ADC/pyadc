@@ -23,11 +23,18 @@ class Light(AdcDeviceResource):
     light_color_format: str | None = None  # RGBW, RGB, HSV, WARM_TO_COOL
     rgb_color: tuple[int, int, int] | None = None
     color_temp: int | None = None
+    icon_id: int | None = None  # device icon integer ID, echoed back on PUT
 
     @property
     def is_switch(self) -> bool:
-        """Return True when this device is a plain on/off switch (not a light)."""
-        return self.device_type == DeviceType.LIGHT_SWITCH_CONTROL
+        """Return True when this device is a plain on/off switch (not a light).
+
+        A device is treated as a switch when it has no light-specific capabilities
+        (no dimming, no RGB, no white-color control).  The ``device_type`` field
+        alone is unreliable because the API's ``managedDeviceType`` attribute does
+        not map to the same DeviceTypeEnum values as the pyadc ``DeviceType`` enum.
+        """
+        return not (self.supports_dimming or self.supports_rgb or self.supports_white_color)
 
     def apply_status_flags(self, new_state: int, flag_mask: int) -> None:
         """Apply DeviceStatusFlags bitmask; maps OPEN bit to on/off state."""
@@ -86,6 +93,13 @@ class Light(AdcDeviceResource):
         except ValueError:
             device_type = DeviceType.LIGHT_SWITCH_CONTROL
 
+        device_icon = snake_attrs.get("device_icon") or {}
+        icon_id: int | None = None
+        try:
+            icon_id = int(device_icon.get("icon", 0))
+        except (TypeError, ValueError):
+            icon_id = None
+
         return cls(
             resource_id=data.get("id", ""),
             name=snake_attrs.get("description", ""),
@@ -97,5 +111,6 @@ class Light(AdcDeviceResource):
             supports_white_color=snake_attrs.get("supports_white_light_color_control", False),
             light_color_format=light_color_format,
             rgb_color=rgb_color,
+            icon_id=icon_id,
             battery_level_pct=snake_attrs.get("battery_level_null"),
         )

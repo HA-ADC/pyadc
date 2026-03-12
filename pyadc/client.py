@@ -183,6 +183,43 @@ class AdcClient:
             except Exception:
                 return {}
 
+    async def put(
+        self,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        base_url: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Perform an authenticated PUT request.
+
+        Args:
+            path: Relative API path or full URL.
+            body: JSON-serialisable request body.  Defaults to ``{}``.
+            base_url: Base URL prepended when *path* is relative.
+            extra_headers: Optional additional headers for this request only.
+
+        Returns:
+            Parsed JSON response body, or ``{}`` if the response body is empty
+            or non-JSON.
+        """
+        effective_base = base_url if base_url is not None else self._api_url_base
+        url = f"{effective_base}{path}" if not path.startswith("http") else path
+        headers = self._build_headers(extra_headers)
+        log.debug("PUT %s  AFG=%s", url, bool(self._afg_token))
+        async with self._session.put(
+            url,
+            json=body or {},
+            headers=headers,
+            cookies=self._mfa_cookies(),
+        ) as resp:
+            self._update_afg_from_response(resp)
+            await self._check_response(resp)
+            try:
+                return await resp.json(content_type=None)
+            except Exception:
+                return {}
+
     async def _check_response(self, resp: aiohttp.ClientResponse) -> None:
         """Raise appropriate exception for error HTTP status codes."""
         if resp.status in (200, 201, 204):
@@ -198,6 +235,12 @@ class AdcClient:
         if resp.status == 401:
             raise AuthenticationFailed(f"401 Unauthorized: {resp.url}")
         if resp.status >= 500:
+            body = ""
+            try:
+                body = await resp.text()
+            except Exception:
+                pass
+            log.debug("5xx response body: %s", body[:3000] if body else "(empty)")
             raise ServiceUnavailable(f"{resp.status} Server Error: {resp.url}")
         if resp.status == 404:
             raise UnexpectedResponse(f"404 Not Found: {resp.url}")

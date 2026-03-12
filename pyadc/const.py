@@ -106,8 +106,9 @@ INT_TO_RESOURCE_EVENT_TYPE: dict[int, "ResourceEventType"] = {
     91: ResourceEventType.DOOR_LOCKED,     # DoorLocked = 91
     100: ResourceEventType.OPENED_CLOSED,  # OpenedClosed = 100
     113: ResourceEventType.ARMED_NIGHT,    # ArmedNight = 113
-    315: ResourceEventType.LIGHT_TURNED_ON,   # LightTurnedOn = 315
-    316: ResourceEventType.LIGHT_TURNED_OFF,  # LightTurnedOff = 316
+    315: ResourceEventType.LIGHT_TURNED_ON,    # LightTurnedOn = 315
+    316: ResourceEventType.LIGHT_TURNED_OFF,   # LightTurnedOff = 316
+    317: ResourceEventType.SWITCH_LEVEL_CHANGED,  # SwitchLevelChanged = 317
 }
 
 

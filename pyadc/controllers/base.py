@@ -135,7 +135,9 @@ class BaseController:
             else:
                 event_type = raw_et
             log.debug("MonitorEvent: device_id=%s event_type=%s (raw=%s) device_type=%s", ws_msg.device_id, event_type, raw_et, ws_msg.device_type)
-            self._handle_event_by_id(ws_msg.device_id, event_type)
+            ws_msg_with_type = ws_msg
+            # Allow subclasses to handle the full message (e.g. to read event_value)
+            self._handle_monitor_event(ws_msg_with_type, event_type)
         elif isinstance(ws_msg, EventWSMessage):
             log.debug("EventWSMessage: device_id=%s event_type=%s", ws_msg.device_id, ws_msg.event_type)
             self._handle_event(ws_msg)
@@ -213,6 +215,19 @@ class BaseController:
             log.info("403 on GET %s — re-authenticating and retrying", path)
             await self._bridge.auth.login()
             return await self._bridge.client.get(path)
+
+    async def _put(self, path: str, body: dict | None = None) -> dict:
+        """PUT with automatic re-login retry on 403 (ASP.NET session expiry)."""
+        try:
+            return await self._bridge.client.put(path, body or {})
+        except NotAuthorized:
+            log.info("403 on PUT %s — re-authenticating and retrying", path)
+            await self._bridge.auth.login()
+            return await self._bridge.client.put(path, body or {})
+
+    def _handle_monitor_event(self, msg: MonitorEventWSMessage, event_type: ResourceEventType | str | int) -> None:
+        """Handle a MonitorEventWSMessage. Override in subclasses for event_value access."""
+        self._handle_event_by_id(msg.device_id, event_type)
 
     def _handle_property_change(self, msg: PropertyChangeWSMessage) -> None:
         """Handle numeric property changes. Subclasses override as needed."""
