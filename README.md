@@ -32,41 +32,9 @@
 | Garage doors | `GARAGE_DOOR` | `GarageDoorController` | `GarageDoor` |
 | Gates | `GATE` | `GateController` | `Gate` |
 | Water valves | `WATER_VALVE` | `ValveController` | `WaterValve` |
+| Water meters (ADC-SHM-100-A) | `devices/water-meter` | `WaterMeterController` | `WaterMeter` |
 | Image sensors | `IMAGE_SENSOR` | `ImageSensorController` | `ImageSensor` |
 | Cameras | `CAMERA` | `CameraController` | `Camera` |
-
-## Not Supported
-
-| Device | Reason |
-|--------|--------|
-| GPS Trackers | Privacy-sensitive; out of scope for a device-control library. |
-| Access Card Readers | Commercial-only ADC product; not available on consumer accounts. |
-| Car Monitor | Automotive telematics is out of scope. |
-| IQ Router | Network device; no sensor/control semantics. |
-| ADC Scenes | ADC scenes conflict with HA automations; skipped intentionally. |
-| X10 Lights | Obsolete protocol (pre-2000); no modern devices to test against. |
-| Shades | Not available in current ADC consumer API. |
-
-## Planned
-
-| Device | `DeviceType` | Notes |
-|--------|-------------|-------|
-| Temperature sensors (ADC-STC-1) | `TEMPERATURE_SENSOR` (41) | Needs live device to confirm numeric vs alarm-state behavior |
-| Doorbell cameras | `DOORBELL` (37) | Ring event detection |
-| Sirens | 14 / 29 | Trigger + state |
-| Smoke + CO combo | `IQ_SMOKE_MULTI_FUNCTION` (53) | Combined sensor type |
-
-## Installation
-
-```bash
-pip install pyadc
-```
-
-Or for development:
-
-```bash
-pip install -e ".[dev]"
-```
 
 ## Installation
 
@@ -233,6 +201,7 @@ pyadc/
 │   ├── cover.py         # GarageDoor, Gate
 │   ├── valve.py
 │   ├── water_sensor.py
+│   ├── water_meter.py   # WaterMeter (ADC-SHM-100-A Water Dragon, REST-polled)
 │   ├── image_sensor.py
 │   └── system.py
 ├── controllers/         # Per-device REST + WS event handling
@@ -245,6 +214,7 @@ pyadc/
 │   ├── cover.py
 │   ├── valve.py
 │   ├── water_sensor.py
+│   ├── water_meter.py   # fetch_all only (no WS events)
 │   ├── image_sensor.py  # peek_in_now
 │   └── system.py
 └── websocket/
