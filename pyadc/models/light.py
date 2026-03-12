@@ -5,16 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Self
 
-from pyadc.const import DeviceStatusFlags, LightState, ResourceType
+from pyadc.const import DeviceStatusFlags, DeviceType, LightState, ResourceType
 from pyadc.models.base import AdcDeviceResource, _camel_to_snake
 
 
 @dataclass
 class Light(AdcDeviceResource):
-    """Alarm.com light resource."""
+    """Alarm.com light resource (includes dimmable lights, RGB lights, and on/off switches)."""
 
     resource_type: ClassVar[str] = ResourceType.LIGHT
     state: LightState = LightState.NO_STATE
+    device_type: DeviceType = DeviceType.LIGHT_SWITCH_CONTROL
     brightness: int | None = None  # 1-99 ADC scale
     supports_dimming: bool = False
     supports_rgb: bool = False
@@ -22,6 +23,11 @@ class Light(AdcDeviceResource):
     light_color_format: str | None = None  # RGBW, RGB, HSV, WARM_TO_COOL
     rgb_color: tuple[int, int, int] | None = None
     color_temp: int | None = None
+
+    @property
+    def is_switch(self) -> bool:
+        """Return True when this device is a plain on/off switch (not a light)."""
+        return self.device_type == DeviceType.LIGHT_SWITCH_CONTROL
 
     def apply_status_flags(self, new_state: int, flag_mask: int) -> None:
         """Apply DeviceStatusFlags bitmask; maps OPEN bit to on/off state."""
@@ -74,10 +80,17 @@ class Light(AdcDeviceResource):
             _format_map = {0: None, 1: "RGBW", 2: "RGB", 3: "WARM_TO_COOL", 4: "HSV"}
             light_color_format = _format_map.get(color_format, str(color_format))
 
+        raw_device_type = snake_attrs.get("device_type")
+        try:
+            device_type = DeviceType(raw_device_type) if raw_device_type is not None else DeviceType.LIGHT_SWITCH_CONTROL
+        except ValueError:
+            device_type = DeviceType.LIGHT_SWITCH_CONTROL
+
         return cls(
             resource_id=data.get("id", ""),
             name=snake_attrs.get("description", ""),
             state=state,
+            device_type=device_type,
             brightness=brightness,
             supports_dimming=snake_attrs.get("is_dimmer", False),
             supports_rgb=snake_attrs.get("supports_rgb_color_control", False),

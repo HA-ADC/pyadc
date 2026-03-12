@@ -35,6 +35,7 @@ from pyadc.controllers.sensor import SensorController
 from pyadc.controllers.system import SystemController
 from pyadc.controllers.thermostat import ThermostatController
 from pyadc.controllers.valve import ValveController
+from pyadc.controllers.water_meter import WaterMeterController
 from pyadc.controllers.water_sensor import WaterSensorController
 from pyadc.events import EventBroker
 from pyadc.exceptions import NotInitialized
@@ -79,6 +80,7 @@ class AlarmBridge:
         gates: :class:`~pyadc.controllers.cover.GateController`
         water_valves: :class:`~pyadc.controllers.valve.ValveController`
         water_sensors: :class:`~pyadc.controllers.water_sensor.WaterSensorController`
+        water_meters: :class:`~pyadc.controllers.water_meter.WaterMeterController`
         image_sensors: :class:`~pyadc.controllers.image_sensor.ImageSensorController`
         systems: :class:`~pyadc.controllers.system.SystemController`
     """
@@ -131,6 +133,7 @@ class AlarmBridge:
         self.gates = GateController(self)
         self.water_valves = ValveController(self)
         self.water_sensors = WaterSensorController(self)
+        self.water_meters = WaterMeterController(self)
         self.image_sensors = ImageSensorController(self)
         self.systems = SystemController(self)
 
@@ -169,6 +172,7 @@ class AlarmBridge:
             self.gates.fetch_all(),
             self.water_valves.fetch_all(),
             self.water_sensors.fetch_all(),
+            self.water_meters.fetch_all(),
             self.image_sensors.fetch_all(),
             return_exceptions=True,
         )
@@ -210,6 +214,7 @@ class AlarmBridge:
             self.gates.fetch_all(),
             self.water_valves.fetch_all(),
             self.water_sensors.fetch_all(),
+            self.water_meters.fetch_all(),
             self.image_sensors.fetch_all(),
             return_exceptions=True,
         )
@@ -226,9 +231,9 @@ class AlarmBridge:
         """Arm the partition in Stay mode.  See :meth:`PartitionController.arm_stay`."""
         await self.partitions.arm_stay(partition_id, **kwargs)
 
-    async def arm_night(self, partition_id: str) -> None:
+    async def arm_night(self, partition_id: str, **kwargs: Any) -> None:
         """Arm the partition in Night mode.  See :meth:`PartitionController.arm_night`."""
-        await self.partitions.arm_night(partition_id)
+        await self.partitions.arm_night(partition_id, **kwargs)
 
     async def disarm(self, partition_id: str, **kwargs: Any) -> None:
         """Disarm the partition.  See :meth:`PartitionController.disarm`."""

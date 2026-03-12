@@ -56,6 +56,19 @@ class _AiortcWorker:
     _lock = threading.Lock()
 
     def __init__(self) -> None:
+        # Increase H264 encoder quality before any PeerConnections are created.
+        # aiortc defaults to 1 Mbps with a 3 Mbps cap — far below what modern
+        # cameras stream at (typically 2-8 Mbps). The encoder respects REMB
+        # feedback from the browser so the browser can negotiate upward, but
+        # it starts at DEFAULT_BITRATE and won't exceed MAX_BITRATE.
+        try:
+            import aiortc.codecs.h264 as _h264
+            _h264.DEFAULT_BITRATE = 4_000_000   # 4 Mbps start
+            _h264.MAX_BITRATE = 8_000_000       # 8 Mbps ceiling
+            _LOGGER.debug("aiortc H264 bitrate: default=4Mbps max=8Mbps")
+        except Exception as exc:
+            _LOGGER.debug("Could not patch aiortc H264 bitrate: %s", exc)
+
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
             target=self._loop.run_forever,
@@ -196,7 +209,10 @@ class JanusSession:
                 "videoport": 0,
                 "videopt": 126,
                 "videortpmap": "H264/90000",
-                "videofmtp": "profile-level-id=42e01f;packetization-mode=1",
+                # profile-level-id: High 4.0 (640028) allows up to 1080p@30fps.
+                # The ADC proxy may downgrade if the camera doesn't support it,
+                # but this ensures we don't artificially cap at Baseline 3.1 (42e01f).
+                "videofmtp": "profile-level-id=640028;packetization-mode=1",
             },
         })
         plugin_data = resp.get("plugindata", {}).get("data", {})

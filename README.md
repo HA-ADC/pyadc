@@ -10,7 +10,51 @@
 - **Full `DeviceStatusUpdate` bitmask handling** — fixes a known gap in community libraries
 - **JWT expiry detection** — close code 1008 triggers automatic re-auth and reconnect
 - **JWT key version rotation** — tries `ver=A` then falls back to `ver=B`
-- **All device types**: partitions, sensors, locks, lights, thermostats, garage doors, gates, water valves/sensors, image sensors
+
+## Supported Device Types
+
+| ADC Device | `DeviceType` | Controller | Model |
+|------------|-------------|------------|-------|
+| Security partitions | `PARTITION` | `PartitionController` | `Partition` |
+| Contact sensors (door/window) | `CONTACT` | `SensorController` | `Sensor` |
+| Motion sensors | `MOTION` | `SensorController` | `Sensor` |
+| Smoke/heat detectors | `SMOKE_HEAT` | `SensorController` | `Sensor` |
+| CO detectors | `CARBON_MONOXIDE` | `SensorController` | `Sensor` |
+| Gas sensors | `GAS` (57) | `SensorController` | `Sensor` |
+| Glassbreak sensors | `GLASSBREAK` | `SensorController` | `Sensor` |
+| Sound sensors | `SOUND` | `SensorController` | `Sensor` |
+| Water/leak sensors | `WATER_MULTI_FUNCTION` (44) | `WaterSensorController` | `WaterSensor` |
+| Water flood sensors | `WATER_FLOOD` (45) | `WaterSensorController` | `WaterSensor` |
+| Locks | `DOOR_LOCK` | `LockController` | `Lock` |
+| Lights (on/off, dim, RGB, color temp) | `DIMMER`, `LIGHT`, `RGB_LIGHT` | `LightController` | `Light` |
+| On/off switches | `LIGHT_SWITCH_CONTROL` (17) | `LightController` | `Light` |
+| Thermostats | `THERMOSTAT` | `ThermostatController` | `Thermostat` |
+| Garage doors | `GARAGE_DOOR` | `GarageDoorController` | `GarageDoor` |
+| Gates | `GATE` | `GateController` | `Gate` |
+| Water valves | `WATER_VALVE` | `ValveController` | `WaterValve` |
+| Image sensors | `IMAGE_SENSOR` | `ImageSensorController` | `ImageSensor` |
+| Cameras | `CAMERA` | `CameraController` | `Camera` |
+
+## Not Supported
+
+| Device | Reason |
+|--------|--------|
+| GPS Trackers | Privacy-sensitive; out of scope for a device-control library. |
+| Access Card Readers | Commercial-only ADC product; not available on consumer accounts. |
+| Car Monitor | Automotive telematics is out of scope. |
+| IQ Router | Network device; no sensor/control semantics. |
+| ADC Scenes | ADC scenes conflict with HA automations; skipped intentionally. |
+| X10 Lights | Obsolete protocol (pre-2000); no modern devices to test against. |
+| Shades | Not available in current ADC consumer API. |
+
+## Planned
+
+| Device | `DeviceType` | Notes |
+|--------|-------------|-------|
+| Temperature sensors (ADC-STC-1) | `TEMPERATURE_SENSOR` (41) | Needs live device to confirm numeric vs alarm-state behavior |
+| Doorbell cameras | `DOORBELL` (37) | Ring event detection |
+| Sirens | 14 / 29 | Trigger + state |
+| Smoke + CO combo | `IQ_SMOKE_MULTI_FUNCTION` (53) | Combined sensor type |
 
 ## Installation
 

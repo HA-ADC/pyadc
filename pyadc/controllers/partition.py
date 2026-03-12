@@ -88,7 +88,14 @@ class PartitionController(BaseController):
             },
         )
 
-    async def arm_night(self, partition_id: str) -> None:
+    async def arm_night(
+        self,
+        partition_id: str,
+        *,
+        silent: bool = False,
+        force_bypass: bool = False,
+        no_entry_delay: bool = False,
+    ) -> None:
         """Arm the partition in Night mode (if supported by the panel).
 
         Night arming in ADC has no dedicated route; it uses the armStay
@@ -96,10 +103,18 @@ class PartitionController(BaseController):
 
         Args:
             partition_id: Resource ID of the partition to arm.
+            silent: Suppress exit-delay beeps.
+            force_bypass: Automatically bypass open sensors.
+            no_entry_delay: Arm without an entry delay.
         """
         await self._post(
             f"{self.resource_type}/{partition_id}/armStay",
-            {"nightArming": True},
+            {
+                "nightArming": True,
+                "silentArming": silent,
+                "forceBypass": force_bypass,
+                "noEntryDelay": no_entry_delay,
+            },
         )
 
     async def disarm(self, partition_id: str, *, clear_alarms: bool = False) -> None:
