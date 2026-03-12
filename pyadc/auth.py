@@ -16,10 +16,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 
 from pyadc.const import (
-    API_URL_BASE,
-    FORM_SUBMIT_URL,
     KEEP_ALIVE_INTERVAL_S,
-    LOGIN_URL,
     OtpType,
     URL_BASE,
 )
@@ -67,6 +64,7 @@ class AuthController:
         username: str,
         password: str,
         mfa_cookie: str = "",
+        base_url: str = URL_BASE,
     ) -> None:
         """Create the auth controller.
 
@@ -79,6 +77,8 @@ class AuthController:
             mfa_cookie: Pre-stored two-factor auth cookie.  When supplied and
                 valid, step 4 of :meth:`login` will see the device as trusted
                 and skip the OTP challenge.
+            base_url: Root URL of the Alarm.com deployment.  Defaults to the
+                production endpoint; override to target a dev/staging server.
         """
         self._client = client
         self._session = session
@@ -89,7 +89,9 @@ class AuthController:
         self._user_id: str = ""
         self._keep_alive_task: asyncio.Task | None = None
         self._form_fields: dict[str, str] = {}
-        self._form_submit_url: str = FORM_SUBMIT_URL
+        self._base_url: str = base_url
+        self._login_url: str = f"{base_url}/login.aspx"
+        self._form_submit_url: str = f"{base_url}/web/Default.aspx"
         self._username_field: str | None = None
         self._password_field: str | None = None
         self._submit_field: str | None = None
@@ -128,7 +130,7 @@ class AuthController:
         Field names are ASP.NET-generated and must be read from the rendered HTML —
         they cannot be hardcoded because they depend on the NamingContainer hierarchy.
         """
-        async with self._session.get(LOGIN_URL, allow_redirects=True) as resp:
+        async with self._session.get(self._login_url, allow_redirects=True) as resp:
             html = await resp.text()
 
         soup = BeautifulSoup(html, "html.parser")
@@ -159,8 +161,8 @@ class AuthController:
         )
 
         # The signInButton uses ASP.NET cross-page postback targeting /Default.aspx.
-        # CustomerDotNet is deployed under /web/, so the actual POST target is FORM_SUBMIT_URL.
-        self._form_submit_url = FORM_SUBMIT_URL
+        # CustomerDotNet is deployed under /web/, so the actual POST target is _form_submit_url.
+        self._form_submit_url = f"{self._base_url}/web/Default.aspx"
 
         log.debug(
             "Login page scraped: username_field=%s, password_field=%s, submit_field=%s",
@@ -195,14 +197,14 @@ class AuthController:
         async with self._session.post(
             self._form_submit_url,
             data=data,
-            headers={"User-Agent": "Mozilla/5.0", "Referrer": LOGIN_URL},
+            headers={"User-Agent": "Mozilla/5.0", "Referrer": self._login_url},
             allow_redirects=False,
         ) as resp:
             location = resp.headers.get("Location", "")
             # Follow the redirect to complete the login sequence and accumulate cookies
             if resp.status in (301, 302, 303, 307, 308) and location:
                 async with self._session.get(
-                    location if location.startswith("http") else f"{URL_BASE}{location}",
+                    location if location.startswith("http") else f"{self._base_url}{location}",
                     allow_redirects=True,
                 ) as final_resp:
                     final_url = str(final_resp.url)

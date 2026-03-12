@@ -12,7 +12,7 @@ from typing import Any
 
 import aiohttp
 
-from pyadc.const import API_URL_BASE, URL_BASE
+from pyadc.const import URL_BASE
 from pyadc.exceptions import (
     AuthenticationFailed,
     NotAuthorized,
@@ -23,14 +23,16 @@ from pyadc.exceptions import (
 
 log = logging.getLogger(__name__)
 
-STANDARD_HEADERS = {
+_STATIC_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     # Device endpoints use NJsonApi and return JSON:API format for this Accept value.
     # Non-device endpoints (e.g. websocket token) override this per-call.
     "Accept": "application/vnd.api+json",
     "Accept-Language": "en-US,en;q=0.9",
-    "Referrer": "https://www.alarm.com/web/system/home",
 }
+
+# Kept for backwards-compatibility with any code that imported STANDARD_HEADERS directly.
+STANDARD_HEADERS = {**_STATIC_HEADERS, "Referrer": f"{URL_BASE}/web/system/home"}
 
 
 class AdcClient:
@@ -45,15 +47,20 @@ class AdcClient:
             on every response.
     """
 
-    def __init__(self, session: aiohttp.ClientSession) -> None:
+    def __init__(self, session: aiohttp.ClientSession, base_url: str = URL_BASE) -> None:
         """Create an AdcClient.
 
         Args:
             session: Shared :class:`aiohttp.ClientSession`.  The caller is
                 responsible for closing it when done.
+            base_url: Root URL of the Alarm.com deployment, e.g.
+                ``"https://www.alarm.com"``.  Defaults to the production
+                endpoint.  Change this only via HA's advanced config option.
         """
         self._session = session
         self._afg_token: str = ""
+        self._api_url_base: str = f"{base_url}/web/api/"
+        self._referrer: str = f"{base_url}/web/system/home"
 
     def _build_headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         """Build the full set of request headers.
@@ -65,7 +72,7 @@ class AdcClient:
             A new headers dict with standard headers, the current AFG token,
             and any *extra* overrides applied.
         """
-        headers = {**STANDARD_HEADERS}
+        headers = {**_STATIC_HEADERS, "Referrer": self._referrer}
         if self._afg_token:
             headers["AjaxRequestUniqueKey"] = self._afg_token
         if extra:
@@ -82,7 +89,7 @@ class AdcClient:
         self,
         path: str,
         *,
-        base_url: str = API_URL_BASE,
+        base_url: str | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Perform an authenticated GET request.
@@ -90,7 +97,8 @@ class AdcClient:
         Args:
             path: Relative API path (e.g. ``"devices/partition"``) or a full
                 URL (detected by ``http`` prefix).
-            base_url: Base URL prepended when *path* is relative.
+            base_url: Base URL prepended when *path* is relative.  Defaults
+                to the instance's configured API base URL.
             extra_headers: Optional additional headers for this request only.
 
         Returns:
@@ -102,7 +110,8 @@ class AdcClient:
             ServiceUnavailable: HTTP 5xx.
             UnexpectedResponse: Any other non-200 status.
         """
-        url = f"{base_url}{path}" if not path.startswith("http") else path
+        effective_base = base_url if base_url is not None else self._api_url_base
+        url = f"{effective_base}{path}" if not path.startswith("http") else path
         async with self._session.get(url, headers=self._build_headers(extra_headers)) as resp:
             self._update_afg_from_response(resp)
             await self._check_response(resp)
@@ -113,7 +122,7 @@ class AdcClient:
         path: str,
         body: dict[str, Any] | None = None,
         *,
-        base_url: str = API_URL_BASE,
+        base_url: str | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Perform an authenticated POST request.
@@ -121,7 +130,8 @@ class AdcClient:
         Args:
             path: Relative API path or full URL.
             body: JSON-serialisable request body.  Defaults to ``{}``.
-            base_url: Base URL prepended when *path* is relative.
+            base_url: Base URL prepended when *path* is relative.  Defaults
+                to the instance's configured API base URL.
             extra_headers: Optional additional headers for this request only.
 
         Returns:
@@ -134,7 +144,8 @@ class AdcClient:
             ServiceUnavailable: HTTP 5xx.
             UnexpectedResponse: Any other non-200 status.
         """
-        url = f"{base_url}{path}" if not path.startswith("http") else path
+        effective_base = base_url if base_url is not None else self._api_url_base
+        url = f"{effective_base}{path}" if not path.startswith("http") else path
         headers = self._build_headers(extra_headers)
         log.debug("POST %s  AFG=%s", url, bool(self._afg_token))
         async with self._session.post(

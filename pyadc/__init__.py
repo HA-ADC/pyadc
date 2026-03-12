@@ -93,6 +93,7 @@ class AlarmBridge:
         *,
         mfa_cookie: str = "",
         two_factor_cookie: str = "",
+        base_url: str = "https://www.alarm.com",
     ) -> None:
         """Create an AlarmBridge instance.
 
@@ -106,19 +107,23 @@ class AlarmBridge:
                 challenge.  Obtain it by calling :meth:`auth.verify_otp` and
                 storing the returned value across sessions.
             two_factor_cookie: Alias for *mfa_cookie* (backward compat).
+            base_url: Root URL of the Alarm.com deployment.  Defaults to the
+                production endpoint.  Pass an alternative URL (e.g. a staging
+                server) via HA's advanced config to target a different backend.
         """
         self._session = session
         self._initialized = False
 
         # Core infrastructure
         self.event_broker = EventBroker()
-        self.client = AdcClient(session)
+        self.client = AdcClient(session, base_url=base_url)
         self.auth = AuthController(
             client=self.client,
             session=session,
             username=username,
             password=password,
             mfa_cookie=mfa_cookie or two_factor_cookie,
+            base_url=base_url,
         )
         self.websocket = WebSocketClient(self)
 
