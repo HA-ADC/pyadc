@@ -19,6 +19,8 @@ class GarageDoorController(BaseController):
     _event_state_map = {
         ResourceEventType.GARAGE_DOOR_OPENED: CoverState.OPEN,
         ResourceEventType.GARAGE_DOOR_CLOSED: CoverState.CLOSED,
+        ResourceEventType.OPENED: CoverState.OPEN,
+        ResourceEventType.CLOSED: CoverState.CLOSED,
     }
 
     async def open(self, device_id: str) -> None:

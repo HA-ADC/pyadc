@@ -88,6 +88,7 @@ class BaseController:
     async def fetch_all(self) -> list[Any]:
         """Fetch all devices of this type from the REST API."""
         try:
+            log.debug("Fetching %s", self.resource_type)
             resp = await self._get(self.resource_type)
             # Device endpoints use NJsonApi (Accept: application/vnd.api+json)
             # and return JSON:API format: {"data": [{id, type, attributes}, ...]}
@@ -105,6 +106,7 @@ class BaseController:
                     new_by_short[short_id] = device
                 except Exception as err:
                     log.debug("Failed to parse %s device: %s", self.resource_type, err)
+            log.debug("Fetched %d %s device(s)", len(new_devices), self.resource_type)
             self._devices = new_devices
             self._devices_by_short_id = new_by_short
             return list(self._devices.values())
