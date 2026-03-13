@@ -203,6 +203,7 @@ pyadc/
 │   ├── water_sensor.py
 │   ├── water_meter.py   # WaterMeter (ADC-SHM-100-A Water Dragon, REST-polled)
 │   ├── image_sensor.py
+│   ├── camera.py
 │   └── system.py
 ├── controllers/         # Per-device REST + WS event handling
 │   ├── base.py          # BaseController with _event_state_map dispatch
