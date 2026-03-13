@@ -13,10 +13,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from pyadc.const import ResourceEventType, ResourceType, ThermostatFanMode, ThermostatTemperatureMode
+from pyadc.const import ResourceEventType, ResourceType, ThermostatFanMode, ThermostatStatus, ThermostatTemperatureMode
 from pyadc.controllers.base import BaseController
 from pyadc.models.thermostat import Thermostat
-from pyadc.websocket.messages import PropertyChangeWSMessage
+from pyadc.websocket.messages import MonitorEventWSMessage, PropertyChangeWSMessage
 
 if TYPE_CHECKING:
     from pyadc import AlarmBridge
@@ -72,9 +72,20 @@ class ThermostatController(BaseController):
                 values in tenths of a degree Fahrenheit (e.g. ``720`` = 72 °F).
             cool_setpoint: Cool setpoint temperature (same unit convention).
         """
+        # The web API uses ThermostatStatusEnum for desiredState, which has different
+        # integer values from ThermostatTemperatureMode (the device/WS enum).
+        _mode_to_status: dict[ThermostatTemperatureMode, ThermostatStatus] = {
+            ThermostatTemperatureMode.OFF: ThermostatStatus.OFF,
+            ThermostatTemperatureMode.HEAT: ThermostatStatus.HEAT,
+            ThermostatTemperatureMode.COOL: ThermostatStatus.COOL,
+            ThermostatTemperatureMode.AUTO: ThermostatStatus.AUTO,
+            ThermostatTemperatureMode.AUX_HEAT: ThermostatStatus.AUX_HEAT,
+            ThermostatTemperatureMode.ENERGY_SAVE_HEAT: ThermostatStatus.HEAT,
+            ThermostatTemperatureMode.ENERGY_SAVE_COOL: ThermostatStatus.COOL,
+        }
         body: dict[str, Any] = {}
         if mode is not None:
-            body["desiredState"] = mode
+            body["desiredState"] = _mode_to_status.get(mode, ThermostatStatus.OFF)
         if fan_mode is not None:
             body["desiredFanMode"] = fan_mode
         if heat_setpoint is not None:
@@ -82,24 +93,38 @@ class ThermostatController(BaseController):
         if cool_setpoint is not None:
             body["desiredCoolSetpoint"] = cool_setpoint
 
+        log.debug("Thermostat setState: %s", body)
         await self._post(
             f"{self.resource_type}/{thermostat_id}/setState",
             body,
         )
 
     def _handle_property_change(self, msg: PropertyChangeWSMessage) -> None:
-        """Update temperature and setpoint values from PropertyChange messages."""
-        device = self._devices.get(msg.device_id)
+        """Update temperature and setpoint values from PropertyChange messages.
+
+        All temperature properties arrive in 0.01°F units (e.g. 7300 = 73.00°F).
+        Setpoints are converted to the device's configured unit before storing.
+        """
+        log.debug("Thermostat PropertyChange: device_id=%s property_id=%s value=%s", msg.device_id, msg.property_id, msg.property_value)
+        device = self._get_device_by_ws_id(msg.device_id)
         if device is None:
+            log.debug("Thermostat PropertyChange: no device for id=%s (known: %s)", msg.device_id, list(self._devices_by_short_id.keys()))
             return
+
+        def _f100_to_unit(value_100ths_f: float) -> float:
+            """Convert 0.01°F units to the device's temperature unit."""
+            temp_f = value_100ths_f / 100.0
+            if device.temperature_unit == "C":
+                return round((temp_f - 32.0) * 5.0 / 9.0, 1)
+            return round(temp_f, 1)
 
         changed = True
         if msg.property_id == _PROPERTY_AMBIENT_TEMP:
-            device.temperature = msg.property_value
+            device.current_temperature = _f100_to_unit(msg.property_value)
         elif msg.property_id == _PROPERTY_HEAT_SETPOINT:
-            device.heat_setpoint = msg.property_value
+            device.target_temperature_heat = _f100_to_unit(msg.property_value)
         elif msg.property_id == _PROPERTY_COOL_SETPOINT:
-            device.cool_setpoint = msg.property_value
+            device.target_temperature_cool = _f100_to_unit(msg.property_value)
         else:
             changed = False
 
@@ -108,14 +133,47 @@ class ThermostatController(BaseController):
 
             self._bridge.event_broker.publish(
                 ResourceEventMessage(
-                    device_id=msg.device_id,
+                    device_id=device.resource_id,
                     device_type=self.resource_type,
                 )
             )
 
+    def _handle_monitor_event(self, msg: MonitorEventWSMessage, event_type: ResourceEventType | str | int) -> None:
+        """Handle thermostat mode/fan change events by reading event_value directly.
+
+        The C# backend embeds the new mode integer in EventValue:
+        - ThermostatModeChanged (95): event_value = ThermostatTemperatureMode int
+        - ThermostatFanModeChanged (120): event_value = ThermostatFanMode int
+        Set these on the model before publishing so HA sees the new state immediately.
+        """
+        device = self._get_device_by_ws_id(msg.device_id)
+        if device is None:
+            return
+
+        if event_type == ResourceEventType.THERMOSTAT_MODE_CHANGED:
+            try:
+                device.state = ThermostatTemperatureMode(int(msg.event_value))
+                log.debug("Thermostat mode changed: %s → %s", device.name, device.state)
+            except (ValueError, KeyError):
+                log.debug("Unknown thermostat mode value: %s", msg.event_value)
+        elif event_type == ResourceEventType.THERMOSTAT_FAN_MODE_CHANGED:
+            try:
+                device.fan_mode = ThermostatFanMode(int(msg.event_value))
+                log.debug("Thermostat fan mode changed: %s → %s", device.name, device.fan_mode)
+            except (ValueError, KeyError):
+                log.debug("Unknown thermostat fan mode value: %s", msg.event_value)
+
+        from pyadc.events import ResourceEventMessage
+        self._bridge.event_broker.publish(
+            ResourceEventMessage(
+                device_id=device.resource_id,
+                device_type=self.resource_type,
+            )
+        )
+
     def _handle_event(self, msg: Any) -> None:
         """Re-fetch thermostat state on mode-change events."""
-        device = self._devices.get(msg.device_id)
+        device = self._get_device_by_ws_id(msg.device_id)
         if device is None:
             return
         # Thermostat mode/fan/setpoint changes don't map to a simple state enum;
@@ -124,7 +182,7 @@ class ThermostatController(BaseController):
 
         self._bridge.event_broker.publish(
             ResourceEventMessage(
-                device_id=msg.device_id,
+                device_id=device.resource_id,
                 device_type=self.resource_type,
             )
         )

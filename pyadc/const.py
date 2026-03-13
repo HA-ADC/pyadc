@@ -106,6 +106,10 @@ INT_TO_RESOURCE_EVENT_TYPE: dict[int, "ResourceEventType"] = {
     91: ResourceEventType.DOOR_LOCKED,     # DoorLocked = 91
     100: ResourceEventType.OPENED_CLOSED,  # OpenedClosed = 100
     113: ResourceEventType.ARMED_NIGHT,    # ArmedNight = 113
+    94: ResourceEventType.THERMOSTAT_SET_POINT_CHANGED,  # ThermostatSetPointChanged = 94
+    95: ResourceEventType.THERMOSTAT_MODE_CHANGED,       # ThermostatModeChanged = 95
+    105: ResourceEventType.THERMOSTAT_OFFSET,            # ThermostatOffset = 105
+    120: ResourceEventType.THERMOSTAT_FAN_MODE_CHANGED,  # ThermostatFanModeChanged = 120
     315: ResourceEventType.LIGHT_TURNED_ON,    # LightTurnedOn = 315
     316: ResourceEventType.LIGHT_TURNED_OFF,   # LightTurnedOff = 316
     317: ResourceEventType.SWITCH_LEVEL_CHANGED,  # SwitchLevelChanged = 317
@@ -215,6 +219,21 @@ class ThermostatTemperatureMode(IntEnum):
     AUX_HEAT = 4
     ENERGY_SAVE_HEAT = 11
     ENERGY_SAVE_COOL = 12
+
+
+class ThermostatStatus(IntEnum):
+    """Web API ``ThermostatStatusEnum`` — the value sent in ``desiredState`` for setState.
+
+    Distinct from ``ThermostatTemperatureMode`` (which is what the device/WS uses).
+    The API maps: Unknown=0, Off=1, Heat=2, Cool=3, Auto=4, AuxHeat=5.
+    """
+
+    UNKNOWN = 0
+    OFF = 1
+    HEAT = 2
+    COOL = 3
+    AUTO = 4
+    AUX_HEAT = 5
 
 
 class ThermostatOperatingState(IntEnum):

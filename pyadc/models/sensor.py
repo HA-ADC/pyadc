@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Self
 
 from pyadc.const import DeviceType, DeviceStatusFlags, ResourceType, SensorState
 from pyadc.models.base import AdcDeviceResource, _camel_to_snake
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -15,13 +18,22 @@ class Sensor(AdcDeviceResource):
 
     resource_type: ClassVar[str] = ResourceType.SENSOR
     state: SensorState = SensorState.UNKNOWN
+    device_type: DeviceType = DeviceType.CONTACT
+    # Ambient temperature value and its unit ("F" or "C").
+    # Populated via commercialTemperatureSensors REST on startup
+    # and via PropertyChangeWSMessage (always °F) on updates.
+    temperature: float | None = None
+    temperature_unit: str = "F"  # "F" or "C"
 
     def apply_status_flags(self, new_state: int, flag_mask: int) -> None:
         """Apply DeviceStatusFlags bitmask; bit 0 = 0→CLOSED, 1→OPEN."""
         super().apply_status_flags(new_state, flag_mask)
         if flag_mask & 0x3:  # BITFLAG_STATE
             self.state = SensorState.OPEN if (new_state & 0x1) else SensorState.CLOSED
-    device_type: DeviceType = DeviceType.CONTACT
+
+    @property
+    def is_temperature_sensor(self) -> bool:
+        return self.device_type in (DeviceType.TEMPERATURE, DeviceType.TEMPERATURE_SENSOR)
 
     @property
     def is_open(self) -> bool:
@@ -39,17 +51,17 @@ class Sensor(AdcDeviceResource):
         attrs = data.get("attributes", {})
         snake_attrs = {_camel_to_snake(k): v for k, v in attrs.items()}
 
-        raw_state = snake_attrs.get("state")
-        try:
-            state = SensorState(raw_state) if raw_state is not None else SensorState.UNKNOWN
-        except ValueError:
-            state = SensorState.UNKNOWN
-
         raw_device_type = snake_attrs.get("device_type")
         try:
             device_type = DeviceType(raw_device_type) if raw_device_type is not None else DeviceType.CONTACT
         except ValueError:
             device_type = DeviceType.CONTACT
+
+        raw_state = snake_attrs.get("state")
+        try:
+            state = SensorState(raw_state) if raw_state is not None else SensorState.UNKNOWN
+        except ValueError:
+            state = SensorState.UNKNOWN
 
         return cls(
             resource_id=data.get("id", ""),

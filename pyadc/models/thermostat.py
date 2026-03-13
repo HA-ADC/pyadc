@@ -51,6 +51,12 @@ class Thermostat(AdcDeviceResource):
     supports_fan_only: bool = False
     supports_humidity_control: bool = False
     temperature_unit: str = "F"  # "F" or "C"
+    supported_temperature_modes: list[ThermostatTemperatureMode] = field(default_factory=lambda: [
+        ThermostatTemperatureMode.OFF,
+        ThermostatTemperatureMode.HEAT,
+        ThermostatTemperatureMode.COOL,
+        ThermostatTemperatureMode.AUTO,
+    ])
 
     @classmethod
     def from_json_api(cls, data: dict[str, Any]) -> Self:
@@ -59,10 +65,32 @@ class Thermostat(AdcDeviceResource):
         snake_attrs = {_camel_to_snake(k): v for k, v in attrs.items()}
 
         raw_state = snake_attrs.get("state")
+        # inferredState is what ADC actually displays (e.g. AUTO=3 even when
+        # the raw Z-Wave state reports AUX_HEAT=4). Fall back to state if absent.
+        raw_inferred = snake_attrs.get("inferred_state")
+        raw_mode = raw_inferred if raw_inferred is not None else raw_state
         try:
-            state = ThermostatTemperatureMode(raw_state) if raw_state is not None else ThermostatTemperatureMode.OFF
+            state = ThermostatTemperatureMode(raw_mode) if raw_mode is not None else ThermostatTemperatureMode.OFF
         except ValueError:
             state = ThermostatTemperatureMode.OFF
+
+        # Build supported modes list from explicit boolean flags in the API response.
+        # Fall back to a sensible default set if none of the flags are present.
+        _mode_flag_map = [
+            ("supports_off_mode", ThermostatTemperatureMode.OFF),
+            ("supports_heat_mode", ThermostatTemperatureMode.HEAT),
+            ("supports_cool_mode", ThermostatTemperatureMode.COOL),
+            ("supports_auto_mode", ThermostatTemperatureMode.AUTO),
+            ("supports_aux_heat_mode", ThermostatTemperatureMode.AUX_HEAT),
+        ]
+        supported_modes = [mode for flag, mode in _mode_flag_map if snake_attrs.get(flag, False)]
+        if not supported_modes:
+            supported_modes = [
+                ThermostatTemperatureMode.OFF,
+                ThermostatTemperatureMode.HEAT,
+                ThermostatTemperatureMode.COOL,
+                ThermostatTemperatureMode.AUTO,
+            ]
 
         raw_fan = snake_attrs.get("fan_mode")
         try:
@@ -83,6 +111,15 @@ class Thermostat(AdcDeviceResource):
             setpoint_type = None
 
         uses_celsius = snake_attrs.get("uses_celsius", False)
+        # Fallback: detect Celsius from ambient temp or setpoint range if flag absent.
+        # Indoor Celsius values (15-35) vs Fahrenheit (50-100) never overlap.
+        if not uses_celsius:
+            ambient = snake_attrs.get("ambient_temp") or snake_attrs.get("forwarding_ambient_temp")
+            heat_sp = snake_attrs.get("heat_setpoint")
+            if ambient is not None and float(ambient) < 50:
+                uses_celsius = True
+            elif heat_sp is not None and float(heat_sp) < 50:
+                uses_celsius = True
 
         return cls(
             resource_id=data.get("id", ""),
@@ -98,5 +135,6 @@ class Thermostat(AdcDeviceResource):
             supports_fan_only=snake_attrs.get("supports_fan_mode", False),
             supports_humidity_control=snake_attrs.get("supports_humidity", False),
             temperature_unit="C" if uses_celsius else "F",
+            supported_temperature_modes=supported_modes,
             battery_level_pct=snake_attrs.get("battery_level_null"),
         )
