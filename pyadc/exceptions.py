@@ -52,15 +52,12 @@ class ServiceUnavailable(PyadcException):
 
 
 class UnexpectedResponse(PyadcException):
-    """The server returned a response that could not be parsed.
+    """Raised when the API returns an unexpected HTTP status or body."""
 
-    Args:
-        response_text: Optional raw response body for diagnostic purposes.
-    """
-
-    def __init__(self, message: str = "Unexpected response", response_text: str | None = None) -> None:
+    def __init__(self, message: str = "Unexpected response", response_text: str | None = None, status_code: int | None = None) -> None:
         super().__init__(message)
         self.response_text = response_text
+        self.status_code = status_code
 
 
 # --- Authorization ---

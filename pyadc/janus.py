@@ -167,7 +167,6 @@ class JanusSession:
             self._url,
             protocols=("janus-protocol",),
             timeout=aiohttp.ClientTimeout(total=15),
-            ssl=False,
         )
         self._recv_task = asyncio.create_task(self._recv_loop(), name="janus_recv")
 

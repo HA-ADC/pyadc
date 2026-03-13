@@ -243,6 +243,6 @@ class AdcClient:
             log.debug("5xx response body: %s", body[:3000] if body else "(empty)")
             raise ServiceUnavailable(f"{resp.status} Server Error: {resp.url}")
         if resp.status == 404:
-            raise UnexpectedResponse(f"404 Not Found: {resp.url}")
+            raise UnexpectedResponse(f"404 Not Found: {resp.url}", status_code=resp.status)
         # Check for ADC-specific session expiry patterns in 422/other
-        raise UnexpectedResponse(f"Unexpected status {resp.status}: {resp.url}")
+        raise UnexpectedResponse(f"Unexpected status {resp.status}: {resp.url}", status_code=resp.status)

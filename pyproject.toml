@@ -16,8 +16,8 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "aiohttp>=3.9",
-    "beautifulsoup4>=4.12",
+    "aiohttp>=3.9,<4",
+    "beautifulsoup4>=4.12,<5",
 ]
 
 [project.optional-dependencies]

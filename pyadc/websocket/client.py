@@ -31,6 +31,7 @@ import random
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, NoReturn
+from urllib.parse import urlencode
 
 import aiohttp
 
@@ -111,6 +112,7 @@ class WebSocketClient:
         self._tasks: list[asyncio.Task] = []
         self._connection_attempts = 0
         self._ws: aiohttp.ClientWebSocketResponse | None = None
+        self._consecutive_ping_failures = 0
 
     @property
     def connected(self) -> bool:
@@ -164,7 +166,7 @@ class WebSocketClient:
         endpoint, token = await self._bridge.auth.get_websocket_token()
 
         # token already contains "&ver=X" appended by WebsocketAuthUtils.IssueToken()
-        url = f"{endpoint}?f=1&auth={token}"
+        url = f"{endpoint}?{urlencode({'f': '1', 'auth': token})}"
         try:
             ws = await self._bridge._session.ws_connect(
                 url,
@@ -260,9 +262,18 @@ class WebSocketClient:
             if self._ws and not self._ws.closed:
                 try:
                     await self._ws.ping()
+                    self._consecutive_ping_failures = 0
                     log.debug("WS keepalive ping sent")
                 except Exception as err:
+                    self._consecutive_ping_failures += 1
                     log.debug("WS ping failed: %s", err)
+                    if self._consecutive_ping_failures >= 3:
+                        log.error(
+                            "WS ping failed %d consecutive times; closing connection to trigger reconnect",
+                            self._consecutive_ping_failures,
+                        )
+                        if self._ws and not self._ws.closed:
+                            await self._ws.close()
 
     def _set_state(self, state: WebSocketState) -> None:
         """Update state and publish ConnectionEvent if it changed."""
