@@ -364,7 +364,7 @@ class AuthController:
                 extra_headers={"Accept": "application/json"},
             )
         except UnexpectedResponse as exc:
-            if exc.status_code == 423:
+            if "423" in str(exc):
                 raise AuthenticationFailed(
                     "Verification code is incorrect or has expired."
                 ) from exc
@@ -451,10 +451,5 @@ class AuthController:
             try:
                 if self._keep_alive_url:
                     await self._client.get(self._keep_alive_url)
-                else:
-                    log.error(
-                        "Keep-alive URL was not set during login; session will expire. "
-                        "Check that profile data loaded successfully."
-                    )
             except Exception as err:
                 log.debug("Keep-alive failed: %s", err)

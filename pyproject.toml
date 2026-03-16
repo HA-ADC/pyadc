@@ -16,7 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "aiohttp>=3.9,<4",
+    "aiohttp>=3.9",
     "aiortc>=1.6.0",
 ]
 

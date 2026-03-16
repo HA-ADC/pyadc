@@ -25,8 +25,8 @@ API_URL_BASE = "https://www.alarm.com/web/api/"
 
 KEEP_ALIVE_INTERVAL_S = 300       # 5-minute HTTP session keep-alive ping
 WS_KEEP_ALIVE_INTERVAL_S = 60     # WebSocket ping interval
-MAX_RECONNECT_WAIT_S = 5 * 60     # Cap for exponential back-off (5 min)
-MAX_CONNECTION_ATTEMPTS = 10      # After this the WS transitions to DEAD
+MAX_RECONNECT_WAIT_S = 30 * 60    # Cap for exponential back-off (30 min)
+MAX_CONNECTION_ATTEMPTS = 25      # After this the WS transitions to DEAD
 REQUEST_RETRY_LIMIT = 3           # REST request retry limit
 
 # ---------------------------------------------------------------------------
