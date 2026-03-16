@@ -13,7 +13,7 @@ import re
 from typing import TYPE_CHECKING
 
 import aiohttp
-from bs4 import BeautifulSoup
+from html.parser import HTMLParser
 
 from pyadc.const import (
     KEEP_ALIVE_INTERVAL_S,
@@ -35,6 +35,42 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 TWO_FACTOR_PATH = "engines/twoFactorAuthentication/twoFactorAuthentications"
+
+
+class _FormParser(HTMLParser):
+    """Minimal stdlib HTML parser that extracts <input> fields from a login form.
+
+    Prefers the form with id="form1" (ASP.NET default); falls back to the
+    first form found on the page.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._forms: list[dict] = []
+        self._current_form: dict | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_dict = dict(attrs)
+        if tag == "form":
+            self._current_form = {"id": attr_dict.get("id") or "", "fields": {}}
+            self._forms.append(self._current_form)
+        elif tag == "input" and self._current_form is not None:
+            name = attr_dict.get("name")
+            if name:
+                self._current_form["fields"][name] = attr_dict.get("value") or ""
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "form":
+            self._current_form = None
+
+    def get_target_form_fields(self) -> dict[str, str] | None:
+        """Return fields from form#form1, or from the first form if not found."""
+        if not self._forms:
+            return None
+        for form in self._forms:
+            if form["id"] == "form1":
+                return form["fields"]
+        return self._forms[0]["fields"]
 
 
 class AuthController:
@@ -147,18 +183,11 @@ class AuthController:
         async with self._session.get(self._login_url, allow_redirects=True, cookies=mfa_cookies) as resp:
             html = await resp.text()
 
-        soup = BeautifulSoup(html, "html.parser")
-        form = soup.find("form", {"id": "form1"}) or soup.find("form")
-        if not form:
+        soup = _FormParser()
+        soup.feed(html)
+        self._form_fields = soup.get_target_form_fields()
+        if self._form_fields is None:
             raise AuthenticationFailed("Could not find login form on page")
-
-        # Extract ALL input fields — ASP.NET VIEWSTATE and visible inputs alike
-        self._form_fields = {}
-        for inp in form.find_all("input"):
-            name = inp.get("name")
-            if not name:
-                continue
-            self._form_fields[name] = inp.get("value", "")
 
         # Discover rendered field names dynamically (ends-with match on control ID)
         self._username_field = next(
