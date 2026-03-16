@@ -1,6 +1,17 @@
 # pyadc
 
-`pyadc` is a standalone async Python library for the [Alarm.com](https://www.alarm.com) API. It has **zero Home Assistant dependencies** and can be used in any Python project.
+`pyadc` is a standalone async Python library for the [Alarm.com](https://www.alarm.com) API endpoints, utlizing websock messages for device state. Meant to be used with the [Alarm.com Home Assistant Integration](https://github.com/HA-ADC/alarmdotcom-ha). This is an unofficial Alarm.com library and **should not** be used as a replacement for home security. An Alarm.com subscription is also required to utilize this pacakge.
+
+## Safety Warnings
+This integration is intended for casual use with Home Assistant and not as a replacement too keep you safe.
+
+- This integration communicates with Alarm.com over a channel that can be broken or changed at any time.
+- It may take several minutes for this integration to receive a status update from Alarm.com's servers.
+- Your automations may be buggy.
+- This code may be buggy. It's written by volunteers in their free time and testing is spotty.
+- You should use Alarm.com's official apps, devices, and services for notifications of all kinds related to safety, break-ins, property damage (e.g.: freeze sensors), etc.
+
+Where possible, use local control for smart home devices that are natively supported by Home Assistant (lights, garage door openers, etc.). Locally controlled devices will continue to work during internet outages whereas this integraiton will not.
 
 ## Features
 
