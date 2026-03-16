@@ -208,10 +208,12 @@ class JanusSession:
                 "videoport": 0,
                 "videopt": 126,
                 "videortpmap": "H264/90000",
-                # profile-level-id: High 4.0 (640028) allows up to 1080p@30fps.
-                # The ADC proxy may downgrade if the camera doesn't support it,
-                # but this ensures we don't artificially cap at Baseline 3.1 (42e01f).
-                "videofmtp": "profile-level-id=640028;packetization-mode=1",
+                # profile-level-id: Baseline 3.1 (42e01f) is the most universally
+                # compatible H.264 profile. aiortc 1.9+ enforces strict profile
+                # matching between the relay track and the browser's offered codecs;
+                # High 4.0 (640028) causes "Failed to set remote video description
+                # send parameters" because most browsers only offer Baseline.
+                "videofmtp": "profile-level-id=42e01f;packetization-mode=1",
             },
         })
         plugin_data = resp.get("plugindata", {}).get("data", {})
@@ -534,7 +536,6 @@ class JanusSession:
             await self._aiortc_add_browser_candidate(cand, mid, idx)
         self._browser_trickle_queue.clear()
 
-        return sdp
         return sdp
 
     # ------------------------------------------------------------------ #
