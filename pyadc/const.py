@@ -23,7 +23,7 @@ API_URL_BASE = "https://www.alarm.com/web/api/"
 # Timing
 # ---------------------------------------------------------------------------
 
-KEEP_ALIVE_INTERVAL_S = 90        # Session timeout is 20 min — ping every 90 s for safe margin
+KEEP_ALIVE_INTERVAL_S = 240       # Server session timeout is 5 min — ping every 4 min for safe margin
 KEEP_ALIVE_MAX_INTERVAL_S = 600   # Cap for keep-alive backoff on consecutive failures (10 min)
 WS_KEEP_ALIVE_INTERVAL_S = 60     # aiohttp heartbeat interval (server also pings every 15 s)
 WS_RECEIVE_TIMEOUT_S = 300        # Max silence before receive() times out — matches JWT lifetime
