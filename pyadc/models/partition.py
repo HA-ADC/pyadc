@@ -78,3 +78,7 @@ class Partition(AdcDeviceResource):
             supports_night_arming=snake_attrs.get("supports_night_arming", False),
             battery_level_pct=snake_attrs.get("battery_level_null"),
         )
+
+    @property
+    def model_label(self) -> str | None:
+        return "Alarm Panel"

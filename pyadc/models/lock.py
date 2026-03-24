@@ -53,3 +53,7 @@ class Lock(AdcDeviceResource):
             max_user_code_length=snake_attrs.get("max_user_code_length", 0),
             battery_level_pct=snake_attrs.get("battery_level_null"),
         )
+
+    @property
+    def model_label(self) -> str | None:
+        return "Z-Wave Lock"

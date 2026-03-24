@@ -121,3 +121,7 @@ class Camera(AdcDeviceResource):
             live_video_source_id=video_source_id,
             battery_level_pct=snake.get("battery_level_null"),
         )
+
+    @property
+    def model_label(self) -> str | None:
+        return self.device_model

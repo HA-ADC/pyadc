@@ -110,3 +110,7 @@ class WaterMeter(AdcDeviceResource):
             malfunction=bool(snake.get("is_malfunctioning", False)),
             battery_level_pct=snake.get("battery_level_null"),
         )
+
+    @property
+    def model_label(self) -> str | None:
+        return "Water Meter"

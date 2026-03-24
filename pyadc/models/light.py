@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Self
 
-from pyadc.const import DeviceStatusFlags, DeviceType, LightState, ResourceType
+from pyadc.const import DeviceStatusFlags, DeviceType, LightState, ResourceType, DEVICE_TYPE_LABELS
 from pyadc.models.base import AdcDeviceResource, _camel_to_snake
 
 
@@ -35,6 +35,11 @@ class Light(AdcDeviceResource):
         not map to the same DeviceTypeEnum values as the pyadc ``DeviceType`` enum.
         """
         return not (self.supports_dimming or self.supports_rgb or self.supports_white_color)
+
+    @property
+    def model_label(self) -> str | None:
+        """Human-readable light/switch type label derived from device_type."""
+        return DEVICE_TYPE_LABELS.get(self.device_type)
 
     def apply_status_flags(self, new_state: int, flag_mask: int) -> None:
         """Apply DeviceStatusFlags bitmask; maps OPEN bit to on/off state."""

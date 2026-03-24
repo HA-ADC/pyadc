@@ -114,3 +114,12 @@ class AdcDeviceResource(AdcResource):
         self.comm_failure = bool(masked & DeviceStatusFlags.COMM_FAILURE)
         self.is_disabled = bool(masked & DeviceStatusFlags.DISABLED)
         self.bypassed = bool(masked & DeviceStatusFlags.BYPASSED)
+
+    @property
+    def model_label(self) -> str | None:
+        """Human-readable model/type label for display in HA device info.
+
+        Override in subclasses to return a meaningful string.  Returns ``None``
+        by default so that HA leaves the model field blank.
+        """
+        return None

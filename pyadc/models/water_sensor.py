@@ -39,3 +39,7 @@ class WaterSensor(AdcDeviceResource):
             state=state,
             battery_level_pct=snake_attrs.get("battery_level_null"),
         )
+
+    @property
+    def model_label(self) -> str | None:
+        return "Water Sensor"

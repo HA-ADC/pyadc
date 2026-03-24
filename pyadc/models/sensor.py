@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Self
 
-from pyadc.const import DeviceType, DeviceStatusFlags, ResourceType, SensorState
+from pyadc.const import DeviceType, DeviceStatusFlags, ResourceType, SensorState, DEVICE_TYPE_LABELS
 from pyadc.models.base import AdcDeviceResource, _camel_to_snake
 
 log = logging.getLogger(__name__)
@@ -44,6 +44,11 @@ class Sensor(AdcDeviceResource):
             SensorState.WET,
             SensorState.ISSUE,
         )
+
+    @property
+    def model_label(self) -> str | None:
+        """Human-readable sensor type label derived from device_type."""
+        return DEVICE_TYPE_LABELS.get(self.device_type)
 
     @classmethod
     def from_json_api(cls, data: dict[str, Any]) -> Self:

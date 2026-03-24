@@ -399,6 +399,54 @@ class DeviceType(IntEnum):
 # ---------------------------------------------------------------------------
 
 
+DEVICE_TYPE_LABELS: dict[int, str] = {
+    DeviceType.CONTACT: "Contact Sensor",
+    DeviceType.MOTION: "Motion Sensor",
+    DeviceType.SOUND: "Sound Sensor",
+    DeviceType.BREAKAGE: "Glass Break Sensor",
+    DeviceType.SMOKE_HEAT: "Smoke/Heat Detector",
+    DeviceType.CARBON_MONOXIDE: "CO Detector",
+    DeviceType.RADON: "Radon Sensor",
+    DeviceType.TEMPERATURE: "Temperature Sensor",
+    DeviceType.PANIC_BUTTON: "Panic Button",
+    DeviceType.CAMERA: "Camera",
+    DeviceType.LIGHT_LEGACY: "Light",
+    DeviceType.SIREN_LEGACY: "Siren",
+    DeviceType.WATER: "Water Sensor",
+    DeviceType.LIGHT_SWITCH_CONTROL: "Z-Wave Switch",
+    DeviceType.PARTITION: "Alarm Panel",
+    DeviceType.ZWAVE_THERMOSTAT: "Z-Wave Thermostat",
+    DeviceType.ZWAVE_LOCK: "Z-Wave Lock",
+    DeviceType.PUSH_BUTTON: "Push Button",
+    DeviceType.ZWAVE_LIGHT: "Z-Wave Light",
+    DeviceType.ZWAVE_SIREN: "Z-Wave Siren",
+    DeviceType.IMAGE_SENSOR: "Image Sensor",
+    DeviceType.POINT_SAFE: "PointSafe Sensor",
+    DeviceType.POWER_METER: "Power Meter",
+    DeviceType.REMOTE_PANIC: "Remote Panic",
+    DeviceType.GARAGE_DOOR: "Garage Door",
+    DeviceType.DOORBELL: "Doorbell",
+    DeviceType.WATER_VALVE: "Water Valve",
+    DeviceType.TEMPERATURE_SENSOR: "Temperature Sensor",
+    DeviceType.TRACKER: "Tracker",
+    DeviceType.WATER_MULTI_FUNCTION: "Water Sensor",
+    DeviceType.WATER_FLOOD: "Flood Sensor",
+    DeviceType.CONTACT_MULTI_FUNCTION: "Contact Sensor",
+    DeviceType.IQ_SMOKE_MULTI_FUNCTION: "Smoke Detector",
+    DeviceType.GAS: "Gas Detector",
+    DeviceType.ACCESS_CARD_READER: "Access Card Reader",
+    DeviceType.GLASSBREAK: "Glass Break Sensor",
+    DeviceType.IQ_PANEL_GLASSBREAK: "Glass Break Sensor",
+    DeviceType.IQ_PANEL_MOTION: "Motion Sensor",
+    DeviceType.CLIMAX_PIR_CAMERA: "PIR Camera",
+    DeviceType.DSC_PIR_CAMERA: "PIR Camera",
+    DeviceType.QOLSYS_PANEL_CAMERA: "Panel Camera",
+    DeviceType.HONEYWELL_PANEL_CAMERA: "Panel Camera",
+    DeviceType.POWERG_PIR_CAMERA: "PIR Camera",
+    DeviceType.GC_NEXT_PANEL_CAMERA: "Panel Camera",
+}
+
+
 class ResourceType:
     """REST API path segments matching actual RoutePrefix values in CustomerDotNet.
 

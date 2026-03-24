@@ -59,6 +59,10 @@ class GarageDoor(AdcDeviceResource):
         """Parse from JSON:API resource object."""
         return _parse_cover(cls, data, ResourceType.GARAGE_DOOR)
 
+    @property
+    def model_label(self) -> str | None:
+        return "Garage Door"
+
 
 @dataclass
 class Gate(AdcDeviceResource):
@@ -80,3 +84,7 @@ class Gate(AdcDeviceResource):
     def from_json_api(cls, data: dict[str, Any]) -> Self:
         """Parse from JSON:API resource object."""
         return _parse_cover(cls, data, ResourceType.GATE)
+
+    @property
+    def model_label(self) -> str | None:
+        return "Gate"

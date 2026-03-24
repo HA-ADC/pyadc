@@ -138,3 +138,7 @@ class Thermostat(AdcDeviceResource):
             supported_temperature_modes=supported_modes,
             battery_level_pct=snake_attrs.get("battery_level_null"),
         )
+
+    @property
+    def model_label(self) -> str | None:
+        return "Z-Wave Thermostat"
