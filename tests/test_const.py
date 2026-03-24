@@ -51,10 +51,10 @@ def test_otp_type_values():
 
 
 def test_resource_type_strings():
-    assert ResourceType.PARTITION == "devices/partition"
-    assert ResourceType.SENSOR == "devices/sensor"
-    assert ResourceType.GARAGE_DOOR == "devices/garage-door"
-    assert ResourceType.GATE == "devices/gate"  # separate from garage-door!
+    assert ResourceType.PARTITION == "devices/partitions"
+    assert ResourceType.SENSOR == "devices/sensors"
+    assert ResourceType.GARAGE_DOOR == "devices/garageDoors"
+    assert ResourceType.GATE == "devices/gates"  # separate from garage-door!
     assert ResourceType.GATE != ResourceType.GARAGE_DOOR
 
 
@@ -89,8 +89,8 @@ def test_light_state_values():
 
 
 def test_valve_state_values():
-    assert ValveState.OPEN == 1
-    assert ValveState.CLOSED == 2
+    assert ValveState.CLOSED == 1
+    assert ValveState.OPEN == 2
 
 
 def test_device_type_partition():

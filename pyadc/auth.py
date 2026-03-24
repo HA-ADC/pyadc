@@ -14,9 +14,12 @@ from typing import TYPE_CHECKING
 
 import aiohttp
 from html.parser import HTMLParser
+from yarl import URL
 
 from pyadc.const import (
+    KEEP_ALIVE_FAILURE_WARN_LIMIT,
     KEEP_ALIVE_INTERVAL_S,
+    KEEP_ALIVE_MAX_INTERVAL_S,
     OtpType,
     URL_BASE,
 )
@@ -101,6 +104,7 @@ class AuthController:
         password: str,
         mfa_cookie: str = "",
         base_url: str = URL_BASE,
+        seamless_token: str = "",
     ) -> None:
         """Create the auth controller.
 
@@ -115,6 +119,11 @@ class AuthController:
                 and skip the OTP challenge.
             base_url: Root URL of the Alarm.com deployment.  Defaults to the
                 production endpoint; override to target a dev/staging server.
+            seamless_token: Pre-stored seamless login token (the ``ST`` browser
+                cookie value).  When supplied, :meth:`login` will attempt a
+                lightweight token-based login before falling back to full
+                credential submission.  Obtain this value by reading
+                :attr:`seamless_token` after a successful :meth:`login`.
         """
         self._client = client
         self._session = session
@@ -123,6 +132,8 @@ class AuthController:
         self._mfa_cookie: str = mfa_cookie
         if mfa_cookie:
             self._client._mfa_cookie = mfa_cookie
+        self._seamless_token: str = seamless_token
+        self._login_lock: asyncio.Lock = asyncio.Lock()
         self._keep_alive_url: str = ""
         self._user_id: str = ""
         self._keep_alive_task: asyncio.Task | None = None
@@ -133,6 +144,11 @@ class AuthController:
         self._username_field: str | None = None
         self._password_field: str | None = None
         self._submit_field: str | None = None
+        self._user_agent: str = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        )
 
     @property
     def mfa_cookie(self) -> str:
@@ -145,32 +161,217 @@ class AuthController:
         self._mfa_cookie = value
         self._client._mfa_cookie = value
 
-    async def login(self) -> None:
-        """Execute the full 4-step Alarm.com login flow.
+    @property
+    def seamless_token(self) -> str:
+        """Return the current seamless login token (``ST`` cookie value).
 
-        Steps:
+        This value rotates on every successful seamless login.  Persist it
+        to storage after each :meth:`login` call and pass it back in on the
+        next startup to avoid a full credential round-trip.
+        """
+        return self._seamless_token
+
+    async def login(self) -> None:
+        """Execute the Alarm.com login flow.
+
+        If a :attr:`seamless_token` is available, attempts a lightweight
+        token-based login first (1–2 HTTP requests instead of 4–6).  Falls
+        back to full credential submission if the token is missing, invalid,
+        or expired.  Either path calls :meth:`_load_user_data` to populate
+        the keep-alive URL and user ID.
+
+        A re-entrancy lock ensures that if multiple coroutines trigger
+        ``login()`` simultaneously (e.g., two device controllers both hit a
+        403 at session expiry), only one full login proceeds; the others wait
+        and reuse the resulting session.
+
+        Steps (full credential path):
         1. Scrape hidden ASP.NET form fields from the login page.
         2. POST credentials; detect failure from redirect URL parameters.
-        3. Load identity/profile data in parallel to get user ID and
-           keep-alive URL.
+        3. Load identity/profile data to get user ID and keep-alive URL.
         4. Query 2FA status; raise :exc:`~pyadc.exceptions.OtpRequired` if
            the device is not trusted and OTP is required.
 
         Raises:
             AuthenticationFailed: On bad credentials or locked account.
-            OtpRequired: When two-factor authentication is required.  The
-                exception carries ``otp_types`` indicating which channels
-                (app / SMS / email) are available.
+            OtpRequired: When two-factor authentication is required.
             ServiceUnavailable: On 5xx responses from Alarm.com.
         """
-        # Step 1: GET login page, scrape ASP.NET form fields
-        await self._scrape_login_page()
-        # Step 2: POST credentials
-        await self._submit_credentials()
-        # Step 3: Load identity/profile/dealer (parallel)
+        async with self._login_lock:
+            if self._seamless_token:
+                if await self._try_seamless_login():
+                    return
+                log.info("Seamless login failed — falling back to full credential login")
+
+            await self._scrape_login_page()
+            await self._submit_credentials()
+            await self._load_user_data()
+            await self._check_two_factor()
+            self._extract_seamless_token()
+
+    async def _try_seamless_login(self) -> bool:
+        """Attempt a token-based login using the stored ``ST`` (seamless) cookie.
+
+        Builds a raw ``Cookie`` header containing the ST token and (if present)
+        the ``twoFactorAuthenticationId`` cookie, then scrapes the login form for
+        ViewState fields and POSTs to ``Default.aspx`` *without* credentials.
+        When the server sees the ``ST`` cookie alongside ``IsFromNewSite=1``, it
+        calls ``ProcessLoginWithSeamlessCookieToken`` instead of credential
+        processing, bypassing 2FA if the token was created with
+        ``bypass_two_factor_auth=true``.
+
+        The raw Cookie header is used (instead of aiohttp's cookie jar / SimpleCookie)
+        because standard base64 tokens contain ``+``, ``/``, and ``=`` which Python's
+        ``SimpleCookie`` wraps in double-quotes.  ASP.NET then receives the value WITH
+        the quotes and ``Convert.FromBase64String`` throws ``FormatException``.
+
+        Returns:
+            ``True`` on success; ``False`` if the token is invalid/expired
+            (clears :attr:`_seamless_token` so the caller falls back to
+            full credential login).
+        """
+        try:
+            log.debug(
+                "Seamless login: using token len=%d prefix=%.8s…",
+                len(self._seamless_token),
+                self._seamless_token,
+            )
+
+            # Build a raw Cookie header string for the POST (ST + MFA).  Standard base64
+            # tokens contain +, /, and = which Python's SimpleCookie wraps in double-quotes
+            # (e.g. ST="abc+def/ghi==").  ASP.NET then reads the value WITH the quotes and
+            # Convert.FromBase64String fails.  A raw header string avoids this quoting entirely.
+            #
+            # IMPORTANT: the ST cookie must NOT be sent on the GET to login.aspx.
+            # NewPublic/LoginForm.ascx.cs reads the ST cookie during page render and, for
+            # non-touch desktop browsers, DELETES the token from the DB and clears the cookie.
+            # Only the POST to Default.aspx should carry the ST cookie.
+            post_cookie_parts = [f"ST={self._seamless_token}"]
+            if self._mfa_cookie:
+                post_cookie_parts.append(f"twoFactorAuthenticationId={self._mfa_cookie}")
+                log.debug(
+                    "Seamless login: using MFA cookie len=%d prefix=%.8s…",
+                    len(self._mfa_cookie),
+                    self._mfa_cookie,
+                )
+            post_raw_cookie = "; ".join(post_cookie_parts)
+
+            # GET cookie: MFA only — no ST so the login form doesn't delete the token
+            get_raw_cookie = f"twoFactorAuthenticationId={self._mfa_cookie}" if self._mfa_cookie else None
+
+            # Scrape form fields (GET to login page — server renders form, doesn't auto-login on GET)
+            get_headers: dict[str, str] = {"User-Agent": self._user_agent}
+            if get_raw_cookie:
+                get_headers["Cookie"] = get_raw_cookie
+            async with self._session.get(
+                self._login_url,
+                allow_redirects=True,
+                headers=get_headers,
+            ) as resp:
+                html = await resp.text()
+
+            soup = _FormParser()
+            soup.feed(html)
+            form_fields = soup.get_target_form_fields()
+            if form_fields is None:
+                log.info("Seamless login: login form not found in GET response (final_url=%s) — server may have auto-redirected", self._login_url)
+                self._seamless_token = ""
+                return False
+
+            # Build POST body from all form fields (ViewState etc.) but without credentials
+            data = dict(form_fields)
+            if "JavaScriptTest" in data:
+                data["JavaScriptTest"] = "1"
+            if "IsFromNewSite" in data:
+                data["IsFromNewSite"] = "1"
+            # Remove submit button — not needed and can confuse ASP.NET page lifecycle
+            for k in list(data.keys()):
+                if k.endswith("butLogin") or k.endswith("signInButton"):
+                    data.pop(k)
+
+            log.debug("Attempting seamless login POST to %s", self._form_submit_url)
+            async with self._session.post(
+                self._form_submit_url,
+                data=data,
+                headers={
+                    "User-Agent": self._user_agent,
+                    "Referrer": self._login_url,
+                    "Cookie": post_raw_cookie,
+                },
+                allow_redirects=False,
+            ) as resp:
+                location = resp.headers.get("Location", "")
+                if resp.status in (301, 302, 303, 307, 308) and location:
+                    final_url = location if location.startswith("http") else f"{self._base_url}{location}"
+                    async with self._session.get(
+                        final_url,
+                        allow_redirects=True,
+                    ) as final_resp:
+                        final_url = str(final_resp.url)
+                else:
+                    final_url = str(resp.url)
+
+                # Detect failure — server redirects to login page or appends error param
+                path_lower = final_url.split("?")[0].lower()
+                if (
+                    "m=login_fail" in final_url
+                    or "m=lockedout" in final_url.lower()
+                    or ("/login" in path_lower and "/web/" not in path_lower)
+                ):
+                    log.info(
+                        "Seamless login token rejected by server — clearing token (final_url=%s)",
+                        final_url,
+                    )
+                    self._seamless_token = ""
+                    return False
+
+                # Capture AFG token from this response
+                afg = resp.cookies.get("afg") or self._session.cookie_jar.filter_cookies(resp.url).get("afg")
+                if afg:
+                    self._client._afg_token = afg.value
+
+        except Exception as err:
+            log.info("Seamless login raised exception (%s) — clearing token", err)
+            self._seamless_token = ""
+            return False
+
+        # Extract the newly rotated ST cookie from the session jar
+        self._extract_seamless_token()
+
+        # Still need user data for keep-alive URL
         await self._load_user_data()
-        # Step 4: Check 2FA status; raise OtpRequired if needed
-        await self._check_two_factor()
+        log.info("Seamless login succeeded")
+        return True
+
+    def _extract_seamless_token(self) -> None:
+        """Read the ``ST`` (seamless login) cookie from the session jar.
+
+        Called after every successful login — full credential or seamless.
+        The value is only present if the server issued it (i.e. the
+        ``chkKeepMeLoggedIn`` checkbox was set in the credential POST, or the
+        previous seamless login triggered token rotation).
+        """
+        try:
+            jar = self._session.cookie_jar.filter_cookies(URL(self._base_url))
+            st = jar.get("ST")
+            if st and st.value:
+                if st.value != self._seamless_token:
+                    log.debug(
+                        "Seamless login token captured/rotated from session jar "
+                        "(len=%d, prefix=%.8s…)",
+                        len(st.value),
+                        st.value,
+                    )
+                self._seamless_token = st.value
+            else:
+                # Dump all jar cookies to diagnose why ST is missing
+                all_cookies = [(c.key, len(c.value)) for c in self._session.cookie_jar]
+                log.debug(
+                    "No ST cookie in session jar after login. Jar keys+lengths: %s",
+                    all_cookies,
+                )
+        except Exception:
+            pass
 
     async def _scrape_login_page(self) -> None:
         """GET login page and dynamically extract ALL form field names and values.
@@ -180,7 +381,12 @@ class AuthController:
         they cannot be hardcoded because they depend on the NamingContainer hierarchy.
         """
         mfa_cookies = {"twoFactorAuthenticationId": self._mfa_cookie} if self._mfa_cookie else None
-        async with self._session.get(self._login_url, allow_redirects=True, cookies=mfa_cookies) as resp:
+        async with self._session.get(
+            self._login_url,
+            allow_redirects=True,
+            cookies=mfa_cookies,
+            headers={"User-Agent": self._user_agent},
+        ) as resp:
             html = await resp.text()
 
         soup = _FormParser()
@@ -235,6 +441,21 @@ class AuthController:
         # The server skips credential processing if this field is not "1".
         if "IsFromNewSite" in data:
             data["IsFromNewSite"] = "1"
+        # Request a seamless login token by checking "Keep Me Logged In".
+        # The server creates an ST cookie when this field is "on", which we persist
+        # and reuse on subsequent startups to avoid full credential round-trips.
+        # MainHandler.cs checks request.Form for any key containing "chkKeepMeLoggedIn"
+        # (not "chkRememberMe" — that's a different checkbox that doesn't trigger the ST
+        # cookie). The CustomerDotNet form only renders chkRememberMe, so we inject
+        # chkKeepMeLoggedIn directly into the POST body instead of relying on the scrape.
+        keep_logged_in_field = next(
+            (k for k in data if "chkKeepMeLoggedIn" in k), None
+        )
+        if keep_logged_in_field:
+            data[keep_logged_in_field] = "on"
+        else:
+            data["chkKeepMeLoggedIn"] = "on"
+        log.debug("Keep-me-logged-in field injected into POST body")
 
         log.debug("Submitting login POST to %s", self._form_submit_url)
         # Inject twoFactorAuthenticationId so the server recognises this as a trusted device
@@ -242,7 +463,7 @@ class AuthController:
         async with self._session.post(
             self._form_submit_url,
             data=data,
-            headers={"User-Agent": "Mozilla/5.0", "Referrer": self._login_url},
+            headers={"User-Agent": self._user_agent, "Referrer": self._login_url},
             cookies=mfa_cookies,
             allow_redirects=False,
         ) as resp:
@@ -275,33 +496,56 @@ class AuthController:
                 log.debug("AFG token acquired after login")
             else:
                 log.warning("No AFG token in cookies after login — session may not be established")
+            # Capture the 2FA device ID the server assigned during login so it
+            # can be replayed on future logins to skip the OTP challenge.
+            tfa_cookie = self._session.cookie_jar.filter_cookies(resp.url).get("twoFactorAuthenticationId")
+            if tfa_cookie and tfa_cookie.value:
+                self._mfa_cookie = tfa_cookie.value
+                log.debug("2FA device ID captured from login response")
 
     async def _load_user_data(self) -> None:
-        """Load identity, profile, and dealer data in parallel."""
+        """Load identity data to obtain the user ID and keep-alive URL.
+
+        The ``identities`` endpoint returns both the login ID (used for 2FA
+        queries) and ``keepAliveUrl`` (an absolute URL to ``KeepAlive.aspx``
+        that must be pinged every :data:`~pyadc.const.KEEP_ALIVE_INTERVAL_S`
+        seconds to prevent HTTP session expiry).
+        """
         try:
-            results = await asyncio.gather(
-                self._client.get("identities"),
-                self._client.get("profile/profile"),
-                return_exceptions=True,
-            )
+            identity_resp = await self._client.get("identities")
         except Exception as err:
-            log.warning("Failed to load user data: %s", err)
+            log.warning("Failed to load identity data: %s", err)
             return
 
-        # Parse identity
-        identity_resp = results[0]
-        if not isinstance(identity_resp, Exception) and identity_resp.get("data"):
-            data = identity_resp["data"]
-            items = data if isinstance(data, list) else [data]
-            if items:
-                self._user_id = items[0].get("id", "")
+        data = identity_resp.get("data")
+        if not data:
+            log.warning("identities response contained no data")
+            return
 
-        # Parse profile — extract keep_alive_url
-        profile_resp = results[1]
-        if not isinstance(profile_resp, Exception) and profile_resp.get("data"):
-            attrs = profile_resp["data"].get("attributes", {})
-            # camelCase: keepAliveUrl
-            self._keep_alive_url = attrs.get("keepAliveUrl", attrs.get("keep_alive_url", ""))
+        items = data if isinstance(data, list) else [data]
+        if not items:
+            return
+
+        first = items[0]
+        self._user_id = first.get("id", "")
+        attrs = first.get("attributes", {})
+
+        # keepAliveUrl is nested inside applicationSessionProperties.
+        # The server may return a relative path (e.g. "/web/KeepAlive.aspx");
+        # resolve it to an absolute URL using the configured base URL.
+        session_props = attrs.get("applicationSessionProperties", {})
+        raw_url = session_props.get("keepAliveUrl", session_props.get("keep_alive_url", ""))
+        if raw_url and not raw_url.startswith("http"):
+            self._keep_alive_url = f"{self._base_url}{raw_url}"
+        else:
+            self._keep_alive_url = raw_url
+
+        if not self._keep_alive_url:
+            log.warning(
+                "keepAliveUrl not found in identities applicationSessionProperties — "
+                "HTTP session will expire in ~20 minutes. applicationSessionProperties keys: %s",
+                list(session_props.keys()),
+            )
 
     async def _check_two_factor(self) -> None:
         """Check 2FA status and raise OtpRequired if MFA is needed."""
@@ -445,11 +689,64 @@ class AuthController:
             self._keep_alive_task = None
 
     async def _keep_alive_loop(self) -> None:
-        """Send keep-alive pings every KEEP_ALIVE_INTERVAL_S seconds."""
+        """Send keep-alive pings every KEEP_ALIVE_INTERVAL_S seconds.
+
+        If the keep-alive URL was not acquired at login, attempts to re-fetch
+        it from the profile endpoint before each ping.  Consecutive failures
+        apply exponential back-off (capped at
+        :data:`~pyadc.const.KEEP_ALIVE_MAX_INTERVAL_S`) to reduce backend
+        load when the server is unreachable.
+        """
+        consecutive_failures = 0
         while True:
-            await asyncio.sleep(KEEP_ALIVE_INTERVAL_S)
+            # Back off on consecutive failures to avoid hammering a degraded backend
+            if consecutive_failures > 0:
+                backoff = min(
+                    KEEP_ALIVE_INTERVAL_S * (2 ** (consecutive_failures - 1)),
+                    KEEP_ALIVE_MAX_INTERVAL_S,
+                )
+                await asyncio.sleep(backoff)
+            else:
+                await asyncio.sleep(KEEP_ALIVE_INTERVAL_S)
+
+            if not self._keep_alive_url:
+                log.warning("Keep-alive URL not set — attempting identity re-fetch")
+                try:
+                    await self._load_user_data()
+                except Exception as err:
+                    log.warning("Keep-alive URL re-fetch failed: %s", err)
+                if not self._keep_alive_url:
+                    log.warning("Keep-alive URL still unavailable — session will expire in ~20 minutes")
+                    continue
+
             try:
-                if self._keep_alive_url:
-                    await self._client.get(self._keep_alive_url)
+                # KeepAlive.aspx is an ASPX page (not a JSON API endpoint) —
+                # use plain browser-like headers; the session cookie jar carries
+                # the auth cookies accumulated during login.
+                async with self._session.get(
+                    self._keep_alive_url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Referrer": f"{self._base_url}/web/system/home",
+                    },
+                    cookies=self._client._mfa_cookies(),
+                ) as resp:
+                    ok = resp.status < 400
+                if ok:
+                    if consecutive_failures > 0:
+                        log.info("Keep-alive recovered after %d failure(s)", consecutive_failures)
+                    consecutive_failures = 0
+                    log.debug("Keep-alive ping sent (status=%s)", resp.status)
+                else:
+                    raise RuntimeError(f"Keep-alive returned HTTP {resp.status}")
             except Exception as err:
-                log.debug("Keep-alive failed: %s", err)
+                consecutive_failures += 1
+                if consecutive_failures >= KEEP_ALIVE_FAILURE_WARN_LIMIT:
+                    log.warning(
+                        "Keep-alive has failed %d consecutive time(s) — session may be expiring: %s",
+                        consecutive_failures,
+                        err,
+                    )
+                else:
+                    log.debug("Keep-alive failed: %s", err)

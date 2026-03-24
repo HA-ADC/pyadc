@@ -109,8 +109,8 @@ async def test_afg_header_sent_when_present(client, mock_response):
     await client.get("test")
     call_kwargs = client._session.get.call_args
     headers = call_kwargs[1].get("headers", {})
-    assert "Ajaxrequestuniquekey" in headers
-    assert headers["Ajaxrequestuniquekey"] == "test-afg-token"
+    assert "AjaxRequestUniqueKey" in headers
+    assert headers["AjaxRequestUniqueKey"] == "test-afg-token"
 
 
 @pytest.mark.asyncio

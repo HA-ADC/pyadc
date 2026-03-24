@@ -64,7 +64,7 @@ def test_inheritance_chain():
 
 def test_all_base_exceptions_are_catchable_as_pyadc_exception():
     for cls in (
-        AuthenticationFailed, MustConfigureMfa, SessionExpired,
+        AuthenticationFailed, SessionExpired,
         ServiceUnavailable, NotAuthorized, UnsupportedOperation, NotInitialized,
     ):
         try:
@@ -73,3 +73,11 @@ def test_all_base_exceptions_are_catchable_as_pyadc_exception():
             pass
         else:
             raise AssertionError(f"{cls} not caught as PyadcException")
+
+    # MustConfigureMfa uses a fixed no-arg message by design
+    try:
+        raise MustConfigureMfa()
+    except PyadcException:
+        pass
+    else:
+        raise AssertionError("MustConfigureMfa not caught as PyadcException")

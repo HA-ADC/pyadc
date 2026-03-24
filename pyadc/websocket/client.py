@@ -1,25 +1,31 @@
 """WebSocket client for real-time Alarm.com device updates.
 
-Implements a 3-task architecture:
+Implements a 2-task architecture:
 
 * **Reader task** — owns the WebSocket connection, handles reconnection with
   exponential back-off, and enqueues parsed messages.
 * **Processor task** — dequeues messages and dispatches them to the
   :class:`~pyadc.events.EventBroker`.
-* **Keep-alive task** — sends periodic WebSocket pings to prevent idle
-  timeouts.
+
+The server (ADC backend) sends its own keepalive pings every 15 seconds via
+.NET's ``WebSocket.DefaultKeepAliveInterval``; aiohttp's ``heartbeat`` parameter
+handles the client side of ping/pong automatically.  A separate manual keepalive
+task is therefore unnecessary.
 
 Connection URL format: ``<endpoint>?f=1&auth=<token>``
 
 The ``<token>`` value returned by the ``api/websockets/token`` endpoint is
 produced by ``WebsocketAuthUtils.IssueToken()``, which appends ``&ver=<N>``
 to the JWT automatically — so the client does **not** add a separate
-``ver=`` parameter.
+``ver=`` parameter.  JWT lifetime is **300 seconds** (configured server-side
+via ``WebsocketAuthTokenTimeout``).
 
 The ``?f=1`` flag instructs the ADC server to send an immediate close-frame
 (code 1008) when the JWT is invalid or expired, rather than silently
-hanging.  On close code 1008 the reader task automatically re-authenticates
-via :meth:`~pyadc.auth.AuthController.login` before reconnecting.
+hanging.  On close code 1008 the reader task reconnects immediately;
+:meth:`~pyadc.websocket.client.WebSocketClient._connect` fetches a fresh JWT
+on every attempt.  A full re-login is only triggered if the JWT fetch itself
+fails (i.e. the HTTP session has also expired).
 """
 
 from __future__ import annotations
@@ -38,7 +44,9 @@ from pyadc.const import (
     MAX_CONNECTION_ATTEMPTS,
     MAX_RECONNECT_WAIT_S,
     WS_KEEP_ALIVE_INTERVAL_S,
+    WS_RECEIVE_TIMEOUT_S,
 )
+from pyadc.exceptions import AuthenticationFailed, NotAuthorized
 from pyadc.events import EventBrokerMessage, EventBrokerTopic
 from pyadc.websocket.messages import (
     BaseWSMessage,
@@ -82,7 +90,7 @@ class ConnectionEvent(EventBrokerMessage):
 
 
 class WebSocketClient:
-    """3-task async WebSocket client for Alarm.com real-time events.
+    """2-task async WebSocket client for Alarm.com real-time events.
 
     **Task architecture:**
 
@@ -91,12 +99,16 @@ class WebSocketClient:
        :class:`~pyadc.websocket.messages.WebSocketMessageParser`, and puts
        the resulting :class:`~pyadc.websocket.messages.BaseWSMessage` objects
        onto the internal queue.  Handles reconnection with exponential
-       back-off and re-auth on close code 1008.
+       back-off.  On close code 1008 (JWT expiry), reconnects immediately;
+       a full re-login only occurs if the JWT fetch fails due to an expired
+       HTTP session.
     2. ``ws_processor`` (:meth:`_processor_task`) — dequeues messages and
        publishes them through the :class:`~pyadc.events.EventBroker` so that
        device controllers and HA entities receive state updates.
-    3. ``ws_keepalive`` (:meth:`_keepalive_task`) — sends a WebSocket ping
-       every :data:`~pyadc.const.WS_KEEP_ALIVE_INTERVAL_S` seconds.
+
+    Keepalive is handled automatically: the ADC server sends pings every 15 s
+    via .NET ``WebSocket.DefaultKeepAliveInterval``, and aiohttp's ``heartbeat``
+    parameter manages the client-side ping/pong response.
 
     **DEAD state:**  After ``MAX_CONNECTION_ATTEMPTS`` consecutive failures
     the state transitions to :attr:`WebSocketState.DEAD` and a
@@ -123,7 +135,7 @@ class WebSocketClient:
         return self._state
 
     async def start(self) -> None:
-        """Spawn the three background tasks (idempotent).
+        """Spawn the two background tasks (idempotent).
 
         If the tasks are already running this method returns immediately.
         """
@@ -137,7 +149,6 @@ class WebSocketClient:
         self._tasks = [
             asyncio.create_task(self._reader_task(), name="ws_reader"),
             asyncio.create_task(self._processor_task(), name="ws_processor"),
-            asyncio.create_task(self._keepalive_task(), name="ws_keepalive"),
         ]
         for t in self._tasks:
             t.add_done_callback(_on_task_done)
@@ -153,23 +164,34 @@ class WebSocketClient:
         self._set_state(WebSocketState.DISCONNECTED)
 
     async def _connect(self) -> aiohttp.ClientWebSocketResponse:
-        """
-        Acquire a WS token and connect.
+        """Acquire a fresh WS JWT and open the WebSocket connection.
 
-        ``IssueToken()`` on the backend returns ``<jwt>&ver=<version>``, so the
-        ``ver`` parameter is already embedded in the token string itself.  The
-        ``?f=1`` flag instructs the server to send an immediate close-frame
-        (code 1008) when the JWT is invalid or expired instead of silently hanging.
-        """
-        endpoint, token = await self._bridge.auth.get_websocket_token()
+        Calls ``websockets/token`` to get a short-lived JWT (300 s lifetime).
+        If that request fails due to an expired HTTP session
+        (:exc:`~pyadc.exceptions.AuthenticationFailed` /
+        :exc:`~pyadc.exceptions.NotAuthorized`), falls back to a full
+        re-login before retrying the token fetch.
 
-        # token already contains "&ver=X" appended by WebsocketAuthUtils.IssueToken()
+        The ``?f=1`` flag tells the server to send close code 1008
+        immediately on JWT expiry rather than silently hanging.
+        ``heartbeat`` delegates ping/pong to aiohttp; ``receive_timeout``
+        is set to match the JWT lifetime so a fully silent connection is
+        detected within one token window.
+        """
+        try:
+            endpoint, token = await self._bridge.auth.get_websocket_token()
+        except (AuthenticationFailed, NotAuthorized):
+            log.info("WS token fetch failed — HTTP session expired, running full re-auth...")
+            await self._bridge.auth.login()
+            await self._bridge.auth.start_keep_alive()
+            endpoint, token = await self._bridge.auth.get_websocket_token()
+
         url = f"{endpoint}?f=1&auth={token}"
         try:
             ws = await self._bridge._session.ws_connect(
                 url,
                 heartbeat=WS_KEEP_ALIVE_INTERVAL_S,
-                receive_timeout=120,
+                receive_timeout=WS_RECEIVE_TIMEOUT_S,
             )
             log.debug("WebSocket connected")
             return ws
@@ -196,14 +218,13 @@ class WebSocketClient:
 
                     elif msg.type == aiohttp.WSMsgType.CLOSE:
                         close_code = msg.data
-                        log.debug("WS closed with code %s", close_code)
                         if close_code == WS_CLOSE_POLICY_VIOLATION:
-                            # JWT expired — re-auth before reconnecting
-                            log.info("WS JWT expired (1008), re-authenticating...")
-                            try:
-                                await self._bridge.auth.login()
-                            except Exception as auth_err:
-                                log.error("Re-auth failed: %s", auth_err)
+                            log.info(
+                                "WS JWT expired (1008) — reconnecting with fresh token"
+                                " (full re-auth only if HTTP session is also dead)"
+                            )
+                        else:
+                            log.debug("WS closed with code %s", close_code)
                         break
 
                     elif msg.type == aiohttp.WSMsgType.ERROR:
@@ -223,7 +244,7 @@ class WebSocketClient:
                 return
 
             wait_s = min(
-                (2**self._connection_attempts) + random.uniform(0, 1),
+                (2**self._connection_attempts) + random.uniform(0, min(2**self._connection_attempts, 30)),
                 MAX_RECONNECT_WAIT_S,
             )
             log.info(
@@ -252,17 +273,6 @@ class WebSocketClient:
                 log.error("Error dispatching WS message: %s", err)
             finally:
                 self._queue.task_done()
-
-    async def _keepalive_task(self) -> NoReturn:
-        """Send periodic pings to keep the WebSocket alive."""
-        while True:
-            await asyncio.sleep(WS_KEEP_ALIVE_INTERVAL_S)
-            if self._ws and not self._ws.closed:
-                try:
-                    await self._ws.ping()
-                    log.debug("WS keepalive ping sent")
-                except Exception as err:
-                    log.debug("WS ping failed: %s", err)
 
     def _set_state(self, state: WebSocketState) -> None:
         """Update state and publish ConnectionEvent if it changed."""

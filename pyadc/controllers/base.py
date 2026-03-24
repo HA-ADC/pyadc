@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from pyadc.const import INT_TO_RESOURCE_EVENT_TYPE, ResourceEventType
 from pyadc.events import EventBrokerTopic, ResourceEventMessage
-from pyadc.exceptions import NotAuthorized
+from pyadc.exceptions import AuthenticationFailed, NotAuthorized
 from pyadc.websocket.messages import (
     DeviceStatusUpdateWSMessage,
     EventWSMessage,
@@ -197,33 +197,34 @@ class BaseController:
             )
 
     async def _post(self, path: str, body: dict | None = None) -> dict:
-        """POST with automatic re-login retry on 403 (ASP.NET session expiry).
+        """POST with automatic re-login retry on 401/403 (session/token expiry).
 
         ADC HTTP sessions expire after ~20 min of inactivity (WS pings don't
-        count). If a command returns 403, we re-login once and retry.
+        count). If a command returns 401 (stale AFG token) or 403 (expired
+        session cookie), we re-login once and retry.
         """
         try:
             return await self._bridge.client.post(path, body or {})
-        except NotAuthorized:
-            log.info("403 on POST %s — re-authenticating and retrying", path)
+        except (NotAuthorized, AuthenticationFailed):
+            log.info("Auth failure on POST %s — re-authenticating and retrying", path)
             await self._bridge.auth.login()
             return await self._bridge.client.post(path, body or {})
 
     async def _get(self, path: str) -> dict:
-        """GET with automatic re-login retry on 403 (ASP.NET session expiry)."""
+        """GET with automatic re-login retry on 401/403 (session/token expiry)."""
         try:
             return await self._bridge.client.get(path)
-        except NotAuthorized:
-            log.info("403 on GET %s — re-authenticating and retrying", path)
+        except (NotAuthorized, AuthenticationFailed):
+            log.info("Auth failure on GET %s — re-authenticating and retrying", path)
             await self._bridge.auth.login()
             return await self._bridge.client.get(path)
 
     async def _put(self, path: str, body: dict | None = None) -> dict:
-        """PUT with automatic re-login retry on 403 (ASP.NET session expiry)."""
+        """PUT with automatic re-login retry on 401/403 (session/token expiry)."""
         try:
             return await self._bridge.client.put(path, body or {})
-        except NotAuthorized:
-            log.info("403 on PUT %s — re-authenticating and retrying", path)
+        except (NotAuthorized, AuthenticationFailed):
+            log.info("Auth failure on PUT %s — re-authenticating and retrying", path)
             await self._bridge.auth.login()
             return await self._bridge.client.put(path, body or {})
 

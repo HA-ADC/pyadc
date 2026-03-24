@@ -23,11 +23,14 @@ API_URL_BASE = "https://www.alarm.com/web/api/"
 # Timing
 # ---------------------------------------------------------------------------
 
-KEEP_ALIVE_INTERVAL_S = 300       # 5-minute HTTP session keep-alive ping
-WS_KEEP_ALIVE_INTERVAL_S = 60     # WebSocket ping interval
+KEEP_ALIVE_INTERVAL_S = 90        # Session timeout is 20 min — ping every 90 s for safe margin
+KEEP_ALIVE_MAX_INTERVAL_S = 600   # Cap for keep-alive backoff on consecutive failures (10 min)
+WS_KEEP_ALIVE_INTERVAL_S = 60     # aiohttp heartbeat interval (server also pings every 15 s)
+WS_RECEIVE_TIMEOUT_S = 300        # Max silence before receive() times out — matches JWT lifetime
 MAX_RECONNECT_WAIT_S = 30 * 60    # Cap for exponential back-off (30 min)
 MAX_CONNECTION_ATTEMPTS = 25      # After this the WS transitions to DEAD
 REQUEST_RETRY_LIMIT = 3           # REST request retry limit
+KEEP_ALIVE_FAILURE_WARN_LIMIT = 3 # Consecutive HTTP keep-alive failures before WARNING log
 
 # ---------------------------------------------------------------------------
 # OTP / 2FA
