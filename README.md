@@ -298,6 +298,71 @@ EventBroker.publish()
 
 ---
 
+## Releasing a New Version
+
+Follow these steps whenever you want to publish a new `pyadc` version and wire it into `alarmdotcom_ha`.
+
+### 1. Bump the version
+
+Edit `pyadc/pyproject.toml`:
+```toml
+[project]
+version = "X.Y.Z"
+```
+
+Use [semver](https://semver.org/):
+- **patch** (`X.Y.Z+1`) — bug fixes, no API changes
+- **minor** (`X.Y+1.0`) — new device types or backward-compatible API additions
+- **major** (`X+1.0.0`) — breaking changes to `AlarmBridge`, models, or controller interfaces
+
+### 2. Run the test suite
+
+```bash
+cd HA_pyADC/pyadc
+pytest tests/ -v
+```
+
+All tests must pass before tagging.
+
+### 3. Commit and tag
+
+```bash
+git add pyadc/pyproject.toml
+git commit -m "chore: bump pyadc to vX.Y.Z"
+git tag vX.Y.Z
+git push origin main --tags
+```
+
+The tag **must** be in the form `vX.Y.Z` — `alarmdotcom_ha`'s `manifest.json` references it by tag name.
+
+### 4. Update `alarmdotcom_ha` to use the new release
+
+Edit `alarmdotcom_ha/custom_components/alarmdotcom_ha/manifest.json`:
+```json
+"requirements": ["pyadc @ git+https://github.com/HA-ADC/pyadc@vX.Y.Z"]
+```
+
+Commit that change in the `alarmdotcom_ha` repo:
+```bash
+git add alarmdotcom_ha/custom_components/alarmdotcom_ha/manifest.json
+git commit -m "chore: update pyadc dependency to vX.Y.Z"
+git push origin main
+```
+
+### 5. Dev environment note
+
+The devcontainer has **no outbound internet access**, so HA cannot install from the git URL. For local development keep `manifest.json` set to just `"pyadc"` (no URL) and install pyadc from source:
+
+```bash
+docker cp pyadc/. hungry_fermat:/tmp/pyadc/
+docker exec hungry_fermat bash -c \
+  "cp -r /tmp/pyadc/pyadc/* /home/vscode/.local/ha-venv/lib/python3.14/site-packages/pyadc/"
+```
+
+The committed `manifest.json` always uses the full git URL — only strip it in the container.
+
+---
+
 ## Running Tests
 
 ```bash
