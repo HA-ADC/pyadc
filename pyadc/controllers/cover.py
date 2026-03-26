@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from pyadc.const import ResourceEventType, ResourceType
-from pyadc.controllers.base import BaseController
+from pyadc.controllers.base import BaseController, _validate_device_id
 from pyadc.const import CoverState
 from pyadc.models.cover import GarageDoor, Gate
 
@@ -25,6 +25,7 @@ class GarageDoorController(BaseController):
 
     async def open(self, device_id: str) -> None:
         """Open a garage door."""
+        _validate_device_id(device_id)
         await self._post(
             f"{self.resource_type}/{device_id}/open",
             {},
@@ -32,6 +33,7 @@ class GarageDoorController(BaseController):
 
     async def close(self, device_id: str) -> None:
         """Close a garage door."""
+        _validate_device_id(device_id)
         await self._post(
             f"{self.resource_type}/{device_id}/close",
             {},
@@ -50,6 +52,7 @@ class GateController(BaseController):
 
     async def open(self, device_id: str) -> None:
         """Open a gate."""
+        _validate_device_id(device_id)
         await self._post(
             f"{self.resource_type}/{device_id}/open",
             {},
@@ -57,6 +60,7 @@ class GateController(BaseController):
 
     async def close(self, device_id: str) -> None:
         """Close a gate."""
+        _validate_device_id(device_id)
         await self._post(
             f"{self.resource_type}/{device_id}/close",
             {},

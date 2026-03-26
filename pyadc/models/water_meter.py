@@ -86,22 +86,35 @@ class WaterMeter(AdcDeviceResource):
 
         display_max = snake.get("daily_usage_display_maximum")
 
+        try:
+            usage_today = float(snake.get("water_usage_today") or 0)
+        except (ValueError, TypeError):
+            usage_today = 0.0
+
+        avg_raw = snake.get("average_daily_water_usage")
+        try:
+            average_daily_usage: float | None = float(avg_raw) if avg_raw is not None else None
+        except (ValueError, TypeError):
+            average_daily_usage = None
+
+        try:
+            daily_usage_minimum = float(snake.get("daily_usage_display_minimum") or 0)
+        except (ValueError, TypeError):
+            daily_usage_minimum = 0.0
+
+        try:
+            daily_usage_maximum: float | None = float(display_max) if display_max is not None else None
+        except (ValueError, TypeError):
+            daily_usage_maximum = None
+
         return cls(
             resource_id=data.get("id", ""),
             name=snake.get("description", ""),
-            usage_today=float(snake.get("water_usage_today") or 0),
-            average_daily_usage=(
-                float(snake["average_daily_water_usage"])
-                if snake.get("average_daily_water_usage") is not None
-                else None
-            ),
+            usage_today=usage_today,
+            average_daily_usage=average_daily_usage,
             volume_unit=volume_unit,
-            daily_usage_display_minimum=float(
-                snake.get("daily_usage_display_minimum") or 0
-            ),
-            daily_usage_display_maximum=(
-                float(display_max) if display_max is not None else None
-            ),
+            daily_usage_display_minimum=daily_usage_minimum,
+            daily_usage_display_maximum=daily_usage_maximum,
             has_active_issues=has_issues,
             requires_calibration_setup=bool(
                 snake.get("requires_calibration_setup", False)

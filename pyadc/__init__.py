@@ -174,21 +174,28 @@ class AlarmBridge:
         """
         await self.auth.login()
 
-        # Fetch all device types in parallel
+        # Fetch all device types in parallel, capped at 3 concurrent REST calls
+        # to avoid hammering the backend during initialisation.
+        sem = asyncio.Semaphore(3)
+
+        async def _limited(coro):
+            async with sem:
+                return await coro
+
         await asyncio.gather(
-            self.systems.fetch_all(),
-            self.cameras.fetch_all(),
-            self.partitions.fetch_all(),
-            self.sensors.fetch_all(),
-            self.locks.fetch_all(),
-            self.lights.fetch_all(),
-            self.thermostats.fetch_all(),
-            self.garage_doors.fetch_all(),
-            self.gates.fetch_all(),
-            self.water_valves.fetch_all(),
-            self.water_sensors.fetch_all(),
-            self.water_meters.fetch_all(),
-            self.image_sensors.fetch_all(),
+            _limited(self.systems.fetch_all()),
+            _limited(self.cameras.fetch_all()),
+            _limited(self.partitions.fetch_all()),
+            _limited(self.sensors.fetch_all()),
+            _limited(self.locks.fetch_all()),
+            _limited(self.lights.fetch_all()),
+            _limited(self.thermostats.fetch_all()),
+            _limited(self.garage_doors.fetch_all()),
+            _limited(self.gates.fetch_all()),
+            _limited(self.water_valves.fetch_all()),
+            _limited(self.water_sensors.fetch_all()),
+            _limited(self.water_meters.fetch_all()),
+            _limited(self.image_sensors.fetch_all()),
             return_exceptions=True,
         )
 
@@ -217,20 +224,26 @@ class AlarmBridge:
         Useful for a manual refresh or after a WebSocket reconnect to fill any
         state gaps that occurred while the connection was down.
         """
+        sem = asyncio.Semaphore(3)
+
+        async def _limited(coro):
+            async with sem:
+                return await coro
+
         await asyncio.gather(
-            self.systems.fetch_all(),
-            self.cameras.fetch_all(),
-            self.partitions.fetch_all(),
-            self.sensors.fetch_all(),
-            self.locks.fetch_all(),
-            self.lights.fetch_all(),
-            self.thermostats.fetch_all(),
-            self.garage_doors.fetch_all(),
-            self.gates.fetch_all(),
-            self.water_valves.fetch_all(),
-            self.water_sensors.fetch_all(),
-            self.water_meters.fetch_all(),
-            self.image_sensors.fetch_all(),
+            _limited(self.systems.fetch_all()),
+            _limited(self.cameras.fetch_all()),
+            _limited(self.partitions.fetch_all()),
+            _limited(self.sensors.fetch_all()),
+            _limited(self.locks.fetch_all()),
+            _limited(self.lights.fetch_all()),
+            _limited(self.thermostats.fetch_all()),
+            _limited(self.garage_doors.fetch_all()),
+            _limited(self.gates.fetch_all()),
+            _limited(self.water_valves.fetch_all()),
+            _limited(self.water_sensors.fetch_all()),
+            _limited(self.water_meters.fetch_all()),
+            _limited(self.image_sensors.fetch_all()),
             return_exceptions=True,
         )
 

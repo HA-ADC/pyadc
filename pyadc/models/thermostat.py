@@ -116,10 +116,13 @@ class Thermostat(AdcDeviceResource):
         if not uses_celsius:
             ambient = snake_attrs.get("ambient_temp") or snake_attrs.get("forwarding_ambient_temp")
             heat_sp = snake_attrs.get("heat_setpoint")
-            if ambient is not None and float(ambient) < 50:
-                uses_celsius = True
-            elif heat_sp is not None and float(heat_sp) < 50:
-                uses_celsius = True
+            try:
+                if ambient is not None and float(ambient) < 50:
+                    uses_celsius = True
+                elif heat_sp is not None and float(heat_sp) < 50:
+                    uses_celsius = True
+            except (ValueError, TypeError):
+                pass
 
         return cls(
             resource_id=data.get("id", ""),

@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from pyadc.const import ArmingState, ResourceEventType, ResourceType
-from pyadc.controllers.base import BaseController
+from pyadc.controllers.base import BaseController, _validate_device_id
 from pyadc.models.partition import Partition
 
 if TYPE_CHECKING:
@@ -53,6 +53,7 @@ class PartitionController(BaseController):
             no_entry_delay: Arm without an entry delay (instant alarm).
             force_arm: Arm even if conditions would normally prevent it.
         """
+        _validate_device_id(partition_id)
         await self._post(
             f"{self.resource_type}/{partition_id}/armAway",
             {
@@ -79,6 +80,7 @@ class PartitionController(BaseController):
             force_bypass: Automatically bypass open sensors.
             no_entry_delay: Arm without an entry delay.
         """
+        _validate_device_id(partition_id)
         await self._post(
             f"{self.resource_type}/{partition_id}/armStay",
             {
@@ -107,6 +109,7 @@ class PartitionController(BaseController):
             force_bypass: Automatically bypass open sensors.
             no_entry_delay: Arm without an entry delay.
         """
+        _validate_device_id(partition_id)
         await self._post(
             f"{self.resource_type}/{partition_id}/armStay",
             {
@@ -125,6 +128,7 @@ class PartitionController(BaseController):
             clear_alarms: When ``True``, simultaneously acknowledge any active
                 alarms so the panel returns to a clean state.
         """
+        _validate_device_id(partition_id)
         await self._post(
             f"{self.resource_type}/{partition_id}/disarm",
             {"clearAlarms": clear_alarms},
@@ -145,6 +149,7 @@ class PartitionController(BaseController):
             bypass: ``True`` to bypass (ignore) the sensors; ``False`` to
                 restore them to normal monitoring.
         """
+        _validate_device_id(partition_id)
         await self._post(
             f"{self.resource_type}/{partition_id}/bypassSensors",
             {
@@ -159,6 +164,7 @@ class PartitionController(BaseController):
         Args:
             partition_id: Resource ID of the partition to clear.
         """
+        _validate_device_id(partition_id)
         await self._post(
             f"{self.resource_type}/{partition_id}/clearPanelFaults",
             {},

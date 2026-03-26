@@ -5,7 +5,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from pyadc.const import ResourceEventType, ResourceType
-from pyadc.controllers.base import BaseController
+from pyadc.controllers.base import BaseController, _validate_device_id
 from pyadc.models.light import Light, LightState
 from pyadc.websocket.messages import MonitorEventWSMessage, PropertyChangeWSMessage
 
@@ -33,6 +33,7 @@ class LightController(BaseController):
         brightness: int | None = None,
     ) -> None:
         """Turn a light on, optionally setting brightness (0–100)."""
+        _validate_device_id(light_id)
         body: dict[str, Any] = {}
         if brightness is not None:
             body["dimmerLevel"] = max(0, min(100, brightness))
@@ -54,6 +55,7 @@ class LightController(BaseController):
             hex_color: Hex color string, e.g. ``"#FF8800"`` or ``"FF8800"``.
             color_format: ADC light color format (1=RGBW, 2=RGB).
         """
+        _validate_device_id(light_id)
         if not hex_color.startswith("#"):
             hex_color = f"#{hex_color}"
         device = self._devices.get(light_id)
@@ -88,6 +90,7 @@ class LightController(BaseController):
 
     async def turn_off(self, light_id: str) -> None:
         """Turn a light off."""
+        _validate_device_id(light_id)
         await self._post(
             f"{self.resource_type}/{light_id}/turnOff",
             {},
@@ -98,7 +101,14 @@ class LightController(BaseController):
         if event_type == ResourceEventType.SWITCH_LEVEL_CHANGED:
             device = self._get_device_by_ws_id(msg.device_id)
             if device is not None:
-                new_level = int(msg.event_value)
+                try:
+                    new_level = int(msg.event_value)
+                except (ValueError, TypeError):
+                    log.debug(
+                        "SwitchLevelChanged: non-numeric event_value %r for device %s — skipping",
+                        msg.event_value, msg.device_id,
+                    )
+                    return
                 log.debug(
                     "SwitchLevelChanged: device_id=%s new_brightness=%s",
                     msg.device_id, new_level,
@@ -172,7 +182,14 @@ class LightController(BaseController):
         if device is None:
             return
         if msg.property_id == _PROPERTY_LIGHT_LEVEL:
-            device.brightness = int(msg.property_value)
+            try:
+                device.brightness = int(msg.property_value)
+            except (ValueError, TypeError):
+                log.debug(
+                    "LightLevel: non-numeric property_value %r for device %s — skipping",
+                    msg.property_value, msg.device_id,
+                )
+                return
             device.state = LightState.LEVEL_CHANGE
             from pyadc.events import ResourceEventMessage
 

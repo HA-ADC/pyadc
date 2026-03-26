@@ -14,7 +14,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from pyadc.const import ResourceEventType, ResourceType, ThermostatFanMode, ThermostatStatus, ThermostatTemperatureMode
-from pyadc.controllers.base import BaseController
+from pyadc.controllers.base import BaseController, _validate_device_id
 from pyadc.models.thermostat import Thermostat
 from pyadc.websocket.messages import MonitorEventWSMessage, PropertyChangeWSMessage
 
@@ -94,6 +94,7 @@ class ThermostatController(BaseController):
             body["desiredCoolSetpoint"] = cool_setpoint
 
         log.debug("Thermostat setState: %s", body)
+        _validate_device_id(thermostat_id)
         await self._post(
             f"{self.resource_type}/{thermostat_id}/setState",
             body,

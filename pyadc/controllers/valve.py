@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from pyadc.const import ResourceEventType, ResourceType, ValveState
-from pyadc.controllers.base import BaseController
+from pyadc.controllers.base import BaseController, _validate_device_id
 from pyadc.events import ResourceEventMessage
 from pyadc.models.valve import WaterValve
 
@@ -33,6 +33,7 @@ class ValveController(BaseController):
 
     async def open(self, valve_id: str) -> None:
         """Open a water valve (optimistic transitioning_to update then POST)."""
+        _validate_device_id(valve_id)
         device: WaterValve | None = self._devices.get(valve_id)
         if device is not None:
             device.transitioning_to = ValveState.OPEN
@@ -46,6 +47,7 @@ class ValveController(BaseController):
 
     async def close(self, valve_id: str) -> None:
         """Close a water valve (optimistic transitioning_to update then POST)."""
+        _validate_device_id(valve_id)
         device: WaterValve | None = self._devices.get(valve_id)
         if device is not None:
             device.transitioning_to = ValveState.CLOSED

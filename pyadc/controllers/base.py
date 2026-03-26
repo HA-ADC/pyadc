@@ -17,6 +17,7 @@ inherits from :class:`BaseController` and sets three class-level attributes:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -37,6 +38,22 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 AdcDeviceT = TypeVar("AdcDeviceT")
+
+import re as _re
+_DEVICE_ID_RE = _re.compile(r'^[\d\-]+$')
+
+
+def _validate_device_id(device_id: str) -> None:
+    """Raise ValueError if device_id is not a safe ADC resource identifier.
+
+    ADC device IDs are numeric strings with an optional hyphen-separated suffix
+    (e.g. ``"104878280-1203"``).  Any other characters — especially ``/``,
+    ``..``, or ``\\`` — could traverse URL path segments.
+    """
+    if not _DEVICE_ID_RE.match(device_id):
+        raise ValueError(
+            f"Invalid device_id {device_id!r}: must contain only digits and hyphens"
+        )
 
 
 class BaseController:
@@ -63,6 +80,7 @@ class BaseController:
         self._bridge = bridge
         self._devices: dict[str, Any] = {}  # {resource_id: model_instance}
         self._devices_by_short_id: dict[str, Any] = {}  # {numeric_suffix: model_instance}
+        self._state_lock = asyncio.Lock()
 
         self._bridge.event_broker.subscribe(
             [EventBrokerTopic.RAW_RESOURCE_EVENT],
@@ -107,8 +125,9 @@ class BaseController:
                 except Exception as err:
                     log.debug("Failed to parse %s device: %s", self.resource_type, err)
             log.debug("Fetched %d %s device(s)", len(new_devices), self.resource_type)
-            self._devices = new_devices
-            self._devices_by_short_id = new_by_short
+            async with self._state_lock:
+                self._devices = new_devices
+                self._devices_by_short_id = new_by_short
             return list(self._devices.values())
         except Exception as err:
             log.debug("Failed to fetch %s: %s", self.resource_type, err)

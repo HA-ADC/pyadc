@@ -243,11 +243,7 @@ class AuthController:
             full credential login).
         """
         try:
-            log.debug(
-                "Seamless login: using token len=%d prefix=%.8s…",
-                len(self._seamless_token),
-                self._seamless_token,
-            )
+            log.debug("Seamless login: using stored token")
 
             # Build a raw Cookie header string for the POST (ST + MFA).  Standard base64
             # tokens contain +, /, and = which Python's SimpleCookie wraps in double-quotes
@@ -261,11 +257,7 @@ class AuthController:
             post_cookie_parts = [f"ST={self._seamless_token}"]
             if self._mfa_cookie:
                 post_cookie_parts.append(f"twoFactorAuthenticationId={self._mfa_cookie}")
-                log.debug(
-                    "Seamless login: using MFA cookie len=%d prefix=%.8s…",
-                    len(self._mfa_cookie),
-                    self._mfa_cookie,
-                )
+                log.debug("Seamless login: MFA cookie set")
             post_raw_cookie = "; ".join(post_cookie_parts)
 
             # GET cookie: MFA only — no ST so the login form doesn't delete the token
@@ -755,6 +747,10 @@ class AuthController:
                     cookies=self._client._mfa_cookies(),
                 ) as resp:
                     ok = resp.status < 400
+                if resp.status == 401:
+                    raise AuthenticationFailed(
+                        f"Keep-alive returned HTTP 401 — session expired"
+                    )
                 if ok:
                     if consecutive_failures > 0:
                         log.info("Keep-alive recovered after %d failure(s)", consecutive_failures)
@@ -762,6 +758,8 @@ class AuthController:
                     log.debug("Keep-alive ping sent (status=%s)", resp.status)
                 else:
                     raise RuntimeError(f"Keep-alive returned HTTP {resp.status}")
+            except AuthenticationFailed:
+                raise  # session expired — propagate to kill the keep-alive task
             except Exception as err:
                 consecutive_failures += 1
                 if consecutive_failures >= KEEP_ALIVE_FAILURE_WARN_LIMIT:

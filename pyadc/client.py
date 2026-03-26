@@ -100,8 +100,8 @@ class AdcClient:
                 if jar_mfa and jar_mfa.value and jar_mfa.value != self._mfa_cookie:
                     log.debug("Updated MFA cookie from session cookie jar")
                     self._mfa_cookie = jar_mfa.value
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("Failed to read MFA cookie from session jar: %s", exc)
 
     def _mfa_cookies(self) -> dict[str, str] | None:
         """Return the MFA cookie dict to inject, or None if not set."""
@@ -180,7 +180,8 @@ class AdcClient:
             await self._check_response(resp)
             try:
                 return await resp.json(content_type=None)
-            except Exception:
+            except Exception as exc:
+                log.debug("Failed to parse POST response as JSON: %s", exc)
                 return {}
 
     async def put(
@@ -217,7 +218,8 @@ class AdcClient:
             await self._check_response(resp)
             try:
                 return await resp.json(content_type=None)
-            except Exception:
+            except Exception as exc:
+                log.debug("Failed to parse PUT response as JSON: %s", exc)
                 return {}
 
     async def _check_response(self, resp: aiohttp.ClientResponse) -> None:
@@ -225,22 +227,10 @@ class AdcClient:
         if resp.status in (200, 201, 204):
             return
         if resp.status == 403:
-            body = ""
-            try:
-                body = await resp.text()
-            except Exception:
-                pass
-            log.debug("403 response body: %s", body[:500] if body else "(empty)")
             raise NotAuthorized(f"403 Forbidden: {resp.url}")
         if resp.status == 401:
             raise AuthenticationFailed(f"401 Unauthorized: {resp.url}")
         if resp.status >= 500:
-            body = ""
-            try:
-                body = await resp.text()
-            except Exception:
-                pass
-            log.debug("5xx response body: %s", body[:3000] if body else "(empty)")
             raise ServiceUnavailable(f"{resp.status} Server Error: {resp.url}")
         if resp.status == 404:
             raise UnexpectedResponse(f"404 Not Found: {resp.url}")

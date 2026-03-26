@@ -147,7 +147,11 @@ class WebSocketClient:
         """Spawn the two background tasks (idempotent).
 
         If the tasks are already running this method returns immediately.
+        Dead/cancelled tasks are filtered out first so a restart after an
+        unexpected task exit correctly spawns fresh tasks rather than
+        returning early with a list of zombie handles.
         """
+        self._tasks = [t for t in self._tasks if not t.done()]
         if self._tasks:
             return
 

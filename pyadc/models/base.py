@@ -8,9 +8,12 @@ applied by DeviceStatusUpdate WebSocket messages.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Self
+
+log = logging.getLogger(__name__)
 
 
 def _camel_to_snake(name: str) -> str:
@@ -48,6 +51,12 @@ class AdcResource:
             A populated instance of the concrete subclass.
         """
         attrs = data.get("attributes", {})
+        if not isinstance(attrs, dict):
+            log.warning(
+                "from_json_api: expected dict for 'attributes', got %s — using empty dict",
+                type(attrs).__name__,
+            )
+            attrs = {}
         snake_attrs = {_camel_to_snake(k): v for k, v in attrs.items()}
         resource_id = data.get("id", "")
         name = snake_attrs.get("description", snake_attrs.get("name", ""))
