@@ -34,9 +34,14 @@ import json
 import logging
 import threading
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 import aiohttp
+
+try:
+    from aiortc.mediastreams import MediaStreamTrack as _MediaStreamTrack
+except ImportError:
+    _MediaStreamTrack = object  # type: ignore[assignment,misc]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -99,6 +104,77 @@ class JanusError(Exception):
     """Raised on Janus protocol errors."""
 
 
+class _ReconnectableTrack(_MediaStreamTrack):
+    """Persistent bridge track that survives Janus RTSP reconnects.
+
+    aiortc's ``RTCRtpSender._run_rtp`` reads frames via ``recv()``.  If the
+    track's ``recv()`` raises ``MediaStreamError`` (which happens when Janus
+    closes the WebRTC connection on RTSP timeout), ``_run_rtp`` **exits
+    permanently** — no further calls to ``replaceTrack`` can restart it.
+
+    This class uses a queue instead of forwarding directly from the Janus
+    receiver.  ``recv()`` simply blocks on ``asyncio.Queue.get()`` — it never
+    raises ``MediaStreamError``, so ``_run_rtp`` keeps looping.  A separate
+    "feeder" coroutine reads from the Janus relay track and pushes frames in.
+
+    On RTSP restart the old feeder is cancelled and a new one is started for
+    the new Janus receiver.  ``_browser_pc`` is never touched — no
+    ``replaceTrack``, no renegotiation with the browser.  Video resumes as
+    soon as the new feeder pushes the first frame (~1 s reconnect window).
+
+    Must inherit from ``MediaStreamTrack`` so that ``RTCRtpSender.__init__``
+    recognises it as a track (isinstance check) and sets ``self.__track``
+    correctly.  Without this, ``_run_rtp`` loops forever on ``sleep(0.02)``
+    waiting for a non-None track and never sends a single packet.
+    """
+
+    def __init__(self, kind: str) -> None:
+        super().__init__()
+        self.kind = kind  # overrides MediaStreamTrack.kind class variable
+        self._queue: asyncio.Queue = asyncio.Queue(maxsize=5)
+        # PTS normalization state — ensures monotonically increasing PTS across
+        # Janus stream restarts.  When the RTSP source reconnects it resets its
+        # PTS near zero; without correction libvpx raises "pts is smaller than
+        # initial pts" and _run_rtp exits permanently.
+        self._pts_watermark: int = -1
+        self._pts_offset: int = 0
+
+    async def recv(self) -> Any:
+        """Return next frame; blocks when empty. Never raises MediaStreamError."""
+        return await self._queue.get()
+
+    async def feed_from(self, source_track: Any) -> None:
+        """Read frames from *source_track*, normalize PTS, and push into queue.
+
+        Adjusts ``frame.pts`` to be monotonically non-decreasing across stream
+        restarts so that aiortc's libvpx encoder never sees a backwards PTS.
+        Exits cleanly when the source track ends (``MediaStreamError``) or when
+        the task is cancelled (intentional restart / close).  If the queue is
+        full, the oldest frame is dropped to prevent memory growth.
+        """
+        try:
+            while True:
+                frame = await source_track.recv()
+                if frame.pts is not None:
+                    adjusted = frame.pts + self._pts_offset
+                    if adjusted < self._pts_watermark:
+                        # PTS jumped backwards (stream restart) — shift offset
+                        # forward so the adjusted value just exceeds the watermark.
+                        self._pts_offset += self._pts_watermark - frame.pts + 1
+                        adjusted = frame.pts + self._pts_offset
+                    if adjusted > self._pts_watermark:
+                        self._pts_watermark = adjusted
+                    frame.pts = adjusted
+                if self._queue.full():
+                    try:
+                        self._queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                self._queue.put_nowait(frame)
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
 class JanusSession:
     """One viewer session: Janus signaling + aiortc bridge to HA browser.
 
@@ -122,16 +198,30 @@ class JanusSession:
         self._token = token
         self._proxy_url = proxy_url
         self._ice_servers_raw = ice_servers or []
+        self._http_session: aiohttp.ClientSession | None = None  # set in start()
 
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._janus_session_id: int | None = None
         self._handle_id: int | None = None
+        self._stream_id: int | None = None  # dynamic mountpoint ID, stored for explicit destroy on close
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._recv_task: asyncio.Task[None] | None = None
         self._keepalive_task: asyncio.Task[None] | None = None
         self._ha_loop: asyncio.AbstractEventLoop | None = None  # set in start()
 
-        # Buffer for Janus trickle ICE candidates that arrive before _janus_pc exists
+        # Guard flags
+        self._closing: bool = False       # True while close() is running — prevents double-close
+        self._stop_handled: bool = False  # True once a stopped event has been acted on
+
+        # Temporary buffers for trickle ICE candidates that arrive before the
+        # peer connections are ready.  Drained and cleared as soon as the PC is
+        # created.  Caps are intentionally generous — a normal WebRTC session
+        # produces only a handful of candidates during startup; the limit only
+        # protects against a pathological / malicious Janus gateway.
+        _MAX_TRICKLE_QUEUE = 100
+        _MAX_PENDING = 50
+        self._max_trickle_queue: int = _MAX_TRICKLE_QUEUE
+        self._max_pending: int = _MAX_PENDING
         self._janus_trickle_queue: list[dict[str, Any]] = []
         # Buffer for browser trickle ICE candidates that arrive before _browser_pc exists
         self._browser_trickle_queue: list[tuple[str, str | None, int | None]] = []
@@ -140,6 +230,14 @@ class JanusSession:
         self._janus_pc = None   # RTCPeerConnection: aiortc ↔ Janus
         self._browser_pc = None  # RTCPeerConnection: aiortc ↔ Browser
         self._worker = _AiortcWorker.get()
+
+        # Persistent bridge tracks and their feeder tasks (replaced on restart)
+        self._reconnectable_tracks: dict[str, "_ReconnectableTrack"] = {}
+        self._feeder_tasks: list[asyncio.Task] = []
+
+        # Optional callback invoked (on the HA event loop) when the stream
+        # has permanently stopped and the session is being torn down.
+        self._on_stopped: "Callable[[], None] | None" = None
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -161,13 +259,13 @@ class JanusSession:
             ``send_message(WebRTCAnswer(answer=...))``.
         """
         self._ha_loop = asyncio.get_running_loop()
+        self._http_session = http_session
 
         # 1. Connect to Janus WebSocket and set up the streaming handle
         self._ws = await http_session.ws_connect(
             self._url,
             protocols=("janus-protocol",),
             timeout=aiohttp.ClientTimeout(total=15),
-            ssl=False,
         )
         self._recv_task = asyncio.create_task(self._recv_loop(), name="janus_recv")
 
@@ -203,8 +301,10 @@ class JanusSession:
                 "add_sps_pps": True,
                 "is_virtual": False,
                 "streaming_type": "proxy",
-                "timeout_seconds": 180,
-                "max_timeout_seconds": 900,
+                # Do NOT set timeout_seconds — the ADC native player omits it entirely
+                # and the server default is much higher.  180 s (our original value)
+                # killed the RTSP connection after exactly 3 minutes, producing a
+                # frozen last frame in the browser.
                 "video": True,
                 "videoport": 0,
                 "videopt": 126,
@@ -223,6 +323,7 @@ class JanusSession:
         stream_id = plugin_data.get("stream", {}).get("id")
         if not stream_id:
             raise JanusError(f"Janus create: no stream.id in response: {plugin_data}")
+        self._stream_id = stream_id
         _LOGGER.debug("Janus dynamic stream ID: %s", stream_id)
 
         # 3. Send watch (no JSEP) — Janus will respond with its SDP offer
@@ -275,6 +376,9 @@ class JanusSession:
         if not candidate:
             return
         if self._browser_pc is None:
+            if len(self._browser_trickle_queue) >= self._max_trickle_queue:
+                _LOGGER.warning("Browser trickle queue full (%d), dropping candidate", self._max_trickle_queue)
+                return
             _LOGGER.debug("Browser trickle candidate arrived before _browser_pc ready, queuing")
             self._browser_trickle_queue.append((candidate, sdp_mid, sdp_m_line_index))
             return
@@ -301,24 +405,57 @@ class JanusSession:
             _LOGGER.debug("Browser ICE candidate error: %s", exc)
 
     async def close(self) -> None:
-        """Shut down all connections and tasks."""
+        """Shut down all connections and tasks.
+
+        Teardown order matters for clean Janus RTSP re-ingest on subsequent
+        sessions with the same proxy_url:
+        1. Stop keepalive so no further keepalives are sent.
+        2. Explicitly destroy the streaming mountpoint (plugin-level destroy)
+           so Janus releases the RTSP connection before the session is gone.
+           This prevents a re-ingest stall when a new session immediately
+           re-uses the same proxy_url.
+        3. Destroy the Janus session and close the WebSocket.
+        4. Cancel and await recv task (WS is closed so it exits cleanly).
+        5. Close aiortc PeerConnections in the worker loop — awaited, not
+           fire-and-forget, so old PC objects are fully torn down before a
+           new session can reuse the singleton _AiortcWorker.
+        """
+        if self._closing:
+            return
+        self._closing = True
+
+        # 1. Stop keepalive
         if self._keepalive_task:
             self._keepalive_task.cancel()
-        if self._recv_task:
-            self._recv_task.cancel()
+            try:
+                await self._keepalive_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._keepalive_task = None
 
-        # Close aiortc PCs in the worker loop
-        janus_pc, browser_pc = self._janus_pc, self._browser_pc
-        self._janus_pc = None
-        self._browser_pc = None
-        if janus_pc or browser_pc:
-            async def _close_pcs():
-                if browser_pc:
-                    await browser_pc.close()
-                if janus_pc:
-                    await janus_pc.close()
-            self._worker.schedule(_close_pcs())
+        # 2. Destroy streaming mountpoint (recv_task still running to receive response)
+        if (
+            self._ws
+            and not self._ws.closed
+            and self._janus_session_id
+            and self._stream_id
+            and self._handle_id
+        ):
+            try:
+                await asyncio.wait_for(
+                    self._tx({
+                        "janus": "message",
+                        "session_id": self._janus_session_id,
+                        "handle_id": self._handle_id,
+                        "body": {"request": "destroy", "id": self._stream_id},
+                    }),
+                    timeout=5.0,
+                )
+                _LOGGER.debug("Janus streaming mountpoint %s destroyed", self._stream_id)
+            except Exception as exc:
+                _LOGGER.debug("Janus mountpoint destroy error (non-fatal): %s", exc)
 
+        # 3. Destroy session and close WebSocket
         if self._ws and not self._ws.closed:
             if self._janus_session_id:
                 try:
@@ -332,6 +469,37 @@ class JanusSession:
                 await self._ws.close()
             except Exception:
                 pass
+
+        # 4. Cancel and await recv task (WS closure causes it to exit naturally)
+        if self._recv_task:
+            self._recv_task.cancel()
+            try:
+                await self._recv_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._recv_task = None
+
+        # 5. Close aiortc PCs — awaited so old objects are fully gone before
+        #    the next session's setup runs in the same _AiortcWorker loop.
+        janus_pc, browser_pc = self._janus_pc, self._browser_pc
+        self._janus_pc = None
+        self._browser_pc = None
+
+        # Cancel feeder tasks before closing PCs so they don't race with teardown.
+        feeder_tasks, self._feeder_tasks = self._feeder_tasks, []
+        for task in feeder_tasks:
+            task.cancel()
+
+        if janus_pc or browser_pc:
+            async def _close_pcs() -> None:
+                if browser_pc:
+                    await browser_pc.close()
+                if janus_pc:
+                    await janus_pc.close()
+            try:
+                await self._worker.run(_close_pcs(), timeout=10.0)
+            except Exception as exc:
+                _LOGGER.debug("Error closing aiortc PCs: %s", exc)
 
         for fut in self._pending.values():
             if not fut.done():
@@ -383,6 +551,9 @@ class JanusSession:
     async def _apply_janus_candidate(self, cand_data: dict[str, Any]) -> None:
         """HA loop: forward a Janus trickle candidate to the worker loop."""
         if self._janus_pc is None:
+            if len(self._janus_trickle_queue) >= self._max_trickle_queue:
+                _LOGGER.warning("Janus trickle queue full (%d), dropping candidate", self._max_trickle_queue)
+                return
             self._janus_trickle_queue.append(cand_data)
             return
         self._worker.schedule(self._aiortc_apply_janus_candidate(cand_data))
@@ -491,14 +662,24 @@ class JanusSession:
             state = self._browser_pc.connectionState if self._browser_pc else "closed"
             _LOGGER.debug("Browser PC connection state: %s", state)
 
-        # Relay tracks from _janus_pc into _browser_pc
+        # Add _ReconnectableTrack objects to _browser_pc.
+        # These persistent bridge tracks survive Janus RTSP reconnects:
+        # their recv() blocks on a queue rather than calling into a Janus
+        # receiver directly, so aiortc's _run_rtp sender loop never exits
+        # due to MediaStreamError when Janus closes the connection.
         track_count = 0
         if self._janus_pc:
             relay = MediaRelay()
             for receiver in self._janus_pc.getReceivers():
                 track = receiver.track
                 if track:
-                    self._browser_pc.addTrack(relay.subscribe(track))
+                    bridge = _ReconnectableTrack(track.kind)
+                    self._reconnectable_tracks[track.kind] = bridge
+                    self._browser_pc.addTrack(bridge)
+                    feeder = asyncio.ensure_future(
+                        bridge.feed_from(relay.subscribe(track))
+                    )
+                    self._feeder_tasks.append(feeder)
                     track_count += 1
         _LOGGER.debug("Browser PC: relaying %d track(s) from Janus", track_count)
 
@@ -559,6 +740,8 @@ class JanusSession:
         msg = {**msg, "transaction": tx, "token": self._token}
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[dict[str, Any]] = loop.create_future()
+        if len(self._pending) >= self._max_pending:
+            raise JanusError(f"Too many in-flight Janus transactions ({self._max_pending})")
         self._pending[tx] = fut
 
         assert self._ws is not None
@@ -605,6 +788,7 @@ class JanusSession:
 
     async def _recv_loop(self) -> None:
         """Read messages from the Janus WebSocket."""
+        ws_died_unexpectedly = False
         try:
             async for ws_msg in self._ws:  # type: ignore[union-attr]
                 if ws_msg.type == aiohttp.WSMsgType.TEXT:
@@ -622,16 +806,29 @@ class JanusSession:
                     self._dispatch(data)
                 elif ws_msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                     _LOGGER.debug("Janus WS closed/error: type=%s", ws_msg.type)
+                    ws_died_unexpectedly = True
                     break
         except asyncio.CancelledError:
-            pass
+            pass  # intentionally cancelled by close() or _restart_janus_stream()
         except Exception as exc:
             _LOGGER.debug("Janus recv exception: %s", exc)
+            ws_died_unexpectedly = True
         finally:
             for fut in self._pending.values():
                 if not fut.done():
                     fut.set_exception(JanusError("WebSocket closed"))
             self._pending.clear()
+            # If the WS died on its own (network drop, server reset, etc.) while
+            # we were streaming — not cancelled by close() or _restart_janus_stream()
+            # — trigger a transparent reconnect.  Without this, the feeder tasks
+            # exit silently when the Janus PC's receiver tracks end, leaving
+            # packet counts frozen indefinitely with no recovery path.
+            if ws_died_unexpectedly and not self._closing and not self._stop_handled and self._ha_loop:
+                _LOGGER.warning("Janus WS closed unexpectedly — attempting reconnect")
+                self._stop_handled = True
+                asyncio.run_coroutine_threadsafe(
+                    self._restart_janus_stream(), self._ha_loop
+                )
 
     def _dispatch(self, data: dict[str, Any]) -> None:
         """Route a Janus message to a pending future."""
@@ -657,10 +854,28 @@ class JanusSession:
                         self._pending.pop(pending_tx, None)
                         fut.set_result(data)
                         return
-            _LOGGER.debug(
-                "Janus handle event: %s",
-                data.get("plugindata", {}).get("data", {}),
+
+            plugin_data = data.get("plugindata", {}).get("data", {})
+            # Check for stream-stopped events from the ADC custom plugin or the
+            # standard streaming plugin.  Both fire when the RTSP ingest dies
+            # (e.g. camera goes offline, network interruption, or server-side
+            # 3-minute RTSP limit reached).  We attempt a transparent Janus
+            # reconnect to keep the browser's WebRTC session alive, avoiding a
+            # frozen last frame without requiring browser-side reconnect logic.
+            status = (
+                plugin_data.get("result", {}).get("status")  # streaming plugin
+                or plugin_data.get("status")                  # adc_streaming plugin
             )
+            if status == "stopped" and not self._closing and not self._stop_handled:
+                self._stop_handled = True
+                reason = plugin_data.get("message", "stream stopped")
+                _LOGGER.warning("Janus stream stopped: %s — will attempt reconnect", reason)
+                if self._ha_loop:
+                    asyncio.run_coroutine_threadsafe(
+                        self._restart_janus_stream(), self._ha_loop
+                    )
+                return
+            _LOGGER.debug("Janus handle event: %s", plugin_data)
         elif janus_type == "hangup":
             _LOGGER.info("Janus hangup: %s", data.get("reason"))
         elif janus_type == "trickle":
@@ -676,6 +891,231 @@ class JanusSession:
         elif janus_type in ("webrtcup", "media", "slowlink"):
             _LOGGER.debug("Janus %s for handle %s", janus_type, data.get("sender"))
 
+
+    async def _restart_janus_stream(self) -> None:
+        """HA loop: transparently reconnect to Janus after an RTSP stop event.
+
+        Tears down only the Janus WebSocket/session (Janus-side), then opens a
+        fresh session with a new dynamic mountpoint and re-negotiates only
+        ``_janus_pc``.  ``_browser_pc`` is kept alive so the browser's WebRTC
+        connection is uninterrupted — no frozen frame, no need for browser-side
+        reconnect logic.
+
+        Falls back to a full ``close()`` if the reconnect fails.
+        """
+        if self._closing:
+            return
+        _LOGGER.info("Restarting Janus RTSP stream (keeping browser connection alive)")
+
+        # ── 1. Tear down Janus-side only (WS + session state) ─────────────
+        if self._keepalive_task:
+            self._keepalive_task.cancel()
+            try:
+                await self._keepalive_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._keepalive_task = None
+
+        if self._ws and not self._ws.closed:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+
+        if self._recv_task:
+            self._recv_task.cancel()
+            try:
+                await self._recv_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._recv_task = None
+
+        # Clear Janus protocol state; _pending futures already drained by _recv_loop.finally
+        self._janus_session_id = None
+        self._handle_id = None
+        self._stream_id = None
+        self._pending.clear()
+        self._janus_trickle_queue.clear()
+        self._stop_handled = False  # reset so next stop triggers another restart
+
+        # Null out _janus_pc NOW (in the HA loop) so that trickle candidates from
+        # the new Janus session queue up in _janus_trickle_queue rather than being
+        # dispatched to the old closed PC and silently dropped.
+        self._janus_pc = None
+
+        # ── 2. Reconnect to Janus and replay the create/watch/start sequence ──
+        try:
+            if not self._http_session:
+                raise JanusError("No HTTP session available for restart")
+
+            self._ws = await self._http_session.ws_connect(
+                self._url,
+                protocols=("janus-protocol",),
+                timeout=aiohttp.ClientTimeout(total=15),
+            )
+            self._recv_task = asyncio.create_task(self._recv_loop(), name="janus_recv")
+
+            resp = await self._tx({"janus": "create"})
+            self._janus_session_id = resp["data"]["id"]
+            _LOGGER.debug("Janus restart: session %d", self._janus_session_id)
+
+            resp = await self._tx({
+                "janus": "attach",
+                "session_id": self._janus_session_id,
+                "plugin": "janus.plugin.streaming",
+            })
+            self._handle_id = resp["data"]["id"]
+            _LOGGER.debug("Janus restart: handle %d", self._handle_id)
+
+            self._keepalive_task = asyncio.create_task(
+                self._keepalive_loop(), name="janus_keepalive"
+            )
+
+            resp = await self._tx({
+                "janus": "message",
+                "session_id": self._janus_session_id,
+                "handle_id": self._handle_id,
+                "body": {
+                    "request": "create",
+                    "is_private": True,
+                    "type": "rtp",
+                    "media_uri": self._proxy_url,
+                    "media_uri_query": "",
+                    "add_sps_pps": True,
+                    "is_virtual": False,
+                    "streaming_type": "proxy",
+                    "video": True,
+                    "videoport": 0,
+                    "videopt": 126,
+                    "videortpmap": "H264/90000",
+                    "videofmtp": "profile-level-id=42e01f;packetization-mode=1",
+                },
+            })
+            plugin_data = resp.get("plugindata", {}).get("data", {})
+            if plugin_data.get("error"):
+                raise JanusError(f"Janus restart create error: {plugin_data['error']}")
+            stream_id = plugin_data.get("stream", {}).get("id")
+            if not stream_id:
+                raise JanusError(f"Janus restart: no stream.id: {plugin_data}")
+            self._stream_id = stream_id
+            _LOGGER.debug("Janus restart: stream %s", stream_id)
+
+            resp = await self._tx(
+                {
+                    "janus": "message",
+                    "session_id": self._janus_session_id,
+                    "handle_id": self._handle_id,
+                    "body": {"request": "watch", "id": stream_id},
+                },
+                wait_for_jsep=True,
+            )
+            janus_sdp = resp.get("jsep", {}).get("sdp")
+            if not janus_sdp:
+                raise JanusError("Janus restart: no SDP from watch")
+
+            # Re-negotiate _janus_pc with the new offer (keeps _browser_pc untouched)
+            answer_sdp = await self._worker.run(
+                self._aiortc_renegotiate_janus(janus_sdp), timeout=30
+            )
+
+            await self._tx(
+                {
+                    "janus": "message",
+                    "session_id": self._janus_session_id,
+                    "handle_id": self._handle_id,
+                    "body": {"request": "start"},
+                    "jsep": {"type": "answer", "sdp": answer_sdp},
+                },
+                wait_for_jsep=False,
+            )
+            _LOGGER.info("Janus stream restarted successfully (stream_id=%s)", stream_id)
+
+        except Exception as exc:
+            _LOGGER.error("Janus restart failed: %s — falling back to full close", exc)
+            # Notify camera layer and do a full teardown
+            if self._on_stopped:
+                try:
+                    self._on_stopped()
+                except Exception:
+                    pass
+            await self.close()
+
+    async def _aiortc_renegotiate_janus(self, janus_offer_sdp: str) -> str:
+        """Worker-loop: create a new _janus_pc and reconnect bridge tracks.
+
+        Called after a Janus RTSP stop — the old _janus_pc was closed by Janus.
+        We create a fresh RTCPeerConnection, answer the new Janus offer, then
+        cancel the old feeder tasks and start new ones that read from the new
+        Janus receivers into the persistent _ReconnectableTrack bridge objects.
+
+        The _browser_pc is untouched — _run_rtp is still looping, blocked on
+        the empty queue inside each _ReconnectableTrack.  As soon as the new
+        feeders start pushing frames, video resumes with no browser reconnect.
+
+        IMPORTANT: self._janus_pc stays None until AFTER both remote and local
+        descriptions are set.  _dispatch (HA loop) checks self._janus_pc to decide
+        whether to queue trickle candidates or route them to the worker.  Setting
+        it before setRemoteDescription completes causes "addIceCandidate without
+        remote description" warnings that silently drop ICE candidates → ICE fails
+        ~60 s after restart.
+        """
+        from aiortc import RTCPeerConnection, RTCSessionDescription
+        from aiortc.contrib.media import MediaRelay
+
+        # self._janus_pc is already None (nulled in HA loop before calling us).
+        # Use a local var so _dispatch keeps routing trickle candidates to
+        # _janus_trickle_queue for the entire negotiation window.
+        new_pc = RTCPeerConnection()
+        ha_loop = self._ha_loop
+
+        @new_pc.on("icecandidate")
+        def on_icecandidate(candidate):
+            if candidate is None or ha_loop is None:
+                return
+            asyncio.run_coroutine_threadsafe(
+                self._send_trickle(candidate), ha_loop
+            )
+
+        offer = RTCSessionDescription(sdp=janus_offer_sdp, type="offer")
+        await new_pc.setRemoteDescription(offer)
+        answer = await new_pc.createAnswer()
+        await new_pc.setLocalDescription(answer)
+
+        # Both descriptions are set — publish the new PC so _dispatch routes
+        # subsequent trickle candidates directly here instead of queuing them.
+        self._janus_pc = new_pc
+
+        # Drain trickle candidates queued while the new PC was being negotiated.
+        for cand in self._janus_trickle_queue:
+            await self._aiortc_apply_janus_candidate(cand)
+        self._janus_trickle_queue.clear()
+
+        # Cancel old feeder tasks (they were blocked waiting on the dead Janus PC's
+        # receiver tracks — cancelling them is safe since _run_rtp reads from the
+        # queue, not from the feeders directly).
+        for task in self._feeder_tasks:
+            task.cancel()
+        self._feeder_tasks.clear()
+
+        # Start new feeder tasks that push frames from the new Janus PC into
+        # the persistent _ReconnectableTrack bridge objects.
+        relay = MediaRelay()
+        new_feeder_count = 0
+        for receiver in new_pc.getReceivers():
+            if receiver.track and receiver.track.kind in self._reconnectable_tracks:
+                bridge = self._reconnectable_tracks[receiver.track.kind]
+                feeder = asyncio.ensure_future(
+                    bridge.feed_from(relay.subscribe(receiver.track))
+                )
+                self._feeder_tasks.append(feeder)
+                new_feeder_count += 1
+
+        _LOGGER.debug(
+            "Janus restart: rewired %d bridge feeder(s) to new Janus PC",
+            new_feeder_count,
+        )
+
+        return new_pc.localDescription.sdp
 
     async def _keepalive_loop(self) -> None:
         """Send Janus keepalives every 25 seconds."""

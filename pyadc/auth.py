@@ -198,10 +198,22 @@ class AuthController:
             ServiceUnavailable: On 5xx responses from Alarm.com.
         """
         async with self._login_lock:
+            # Discard the stale AFG anti-forgery token from the previous session.
+            # It must not be sent on any request issued during re-auth; each login
+            # response will supply a fresh value via _update_afg_from_response().
+            self._client._afg_token = ""
+
             if self._seamless_token:
                 if await self._try_seamless_login():
                     return
                 log.info("Seamless login failed — falling back to full credential login")
+
+            # Clear stale session cookies before the full credential path.
+            # Seamless login uses explicit raw Cookie headers (jar-independent), so
+            # this only runs after seamless has already been tried and failed.
+            # An expired session cookie in the jar could confuse the login-page
+            # scrape or cause the server to mis-classify the request.
+            self._session.cookie_jar.clear()
 
             await self._scrape_login_page()
             await self._submit_credentials()

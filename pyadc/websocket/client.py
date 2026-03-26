@@ -20,6 +20,15 @@ to the JWT automatically — so the client does **not** add a separate
 ``ver=`` parameter.  JWT lifetime is **300 seconds** (configured server-side
 via ``WebsocketAuthTokenTimeout``).
 
+.. note:: **Security constraint** — the ADC backend reads the JWT
+    exclusively from ``Request.QueryString["auth"]``
+    (``AlarmClientWebSocketService.cs:173``).  There is no
+    ``Authorization`` header alternative, so the token will appear in
+    server access logs and intermediate proxy logs.  Mitigations: the
+    JWT is short-lived (300 s), is both signed and encrypted, and is
+    scoped to a specific ``customerId``.  Header-based auth would
+    require a backend change on the Alarm.com side.
+
 The ``?f=1`` flag instructs the ADC server to send an immediate close-frame
 (code 1008) when the JWT is invalid or expired, rather than silently
 hanging.  On close code 1008 the reader task reconnects immediately;
@@ -186,6 +195,14 @@ class WebSocketClient:
             await self._bridge.auth.start_keep_alive()
             endpoint, token = await self._bridge.auth.get_websocket_token()
 
+        # SECURITY NOTE: The ADC backend reads the JWT exclusively from the URL
+        # query string (AlarmClientWebSocketService.cs, line 173:
+        # `Request.QueryString.Get("auth")`).  There is no header-based
+        # alternative.  The token therefore appears in server access logs and
+        # any intermediate proxies.  Mitigations: the JWT is short-lived
+        # (300 s), encrypted+signed (not just signed), and tied to a specific
+        # customerId — replay value is low but the exposure is unavoidable
+        # until the ADC backend adds header-based auth.
         url = f"{endpoint}?f=1&auth={token}"
         try:
             ws = await self._bridge._session.ws_connect(
