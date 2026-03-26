@@ -330,6 +330,16 @@ class AuthController:
                 if afg:
                     self._client._afg_token = afg.value
 
+        except (
+            aiohttp.ClientPayloadError,
+            aiohttp.ClientConnectionError,
+            aiohttp.ServerTimeoutError,
+            asyncio.TimeoutError,
+        ) as err:
+            # Transient network error — token is still valid, propagate so the
+            # caller can retry rather than falling back to full credential login.
+            log.warning("Seamless login transient network error (%s) — keeping token", err)
+            raise
         except Exception as err:
             log.info("Seamless login raised exception (%s) — clearing token", err)
             self._seamless_token = ""
