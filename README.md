@@ -1,9 +1,9 @@
 # pyadc
 
-`pyadc` is a standalone async Python library for the [Alarm.com](https://www.alarm.com) API endpoints, utlizing websock messages for device state. Meant to be used with the [Alarm.com Home Assistant Integration](https://github.com/HA-ADC/alarmdotcom-ha). This is an unofficial Alarm.com library and **should not** be used as a replacement for home security. An Alarm.com subscription is also required to utilize this pacakge.
+`pyadc` is a standalone async Python library for the [Alarm.com](https://www.alarm.com) API endpoints, utilizing WebSocket messages for device state. Meant to be used with the [Alarm.com Home Assistant Integration](https://github.com/HA-ADC/alarmdotcom-ha). This is an unofficial Alarm.com library and **should not** be used as a replacement for home security. An Alarm.com subscription is also required to utilize this package.
 
 ## Safety Warnings
-This integration is intended for casual use with Home Assistant and not as a replacement too keep you safe.
+This integration is intended for casual use with Home Assistant and not as a replacement to keep you safe.
 
 - This integration communicates with Alarm.com over a channel that can be broken or changed at any time.
 - It may take several minutes for this integration to receive a status update from Alarm.com's servers.
@@ -11,13 +11,13 @@ This integration is intended for casual use with Home Assistant and not as a rep
 - This code may be buggy. It's written by volunteers in their free time and testing is spotty.
 - You should use Alarm.com's official apps, devices, and services for notifications of all kinds related to safety, break-ins, property damage (e.g.: freeze sensors), etc.
 
-Where possible, use local control for smart home devices that are natively supported by Home Assistant (lights, garage door openers, etc.). Locally controlled devices will continue to work during internet outages whereas this integraiton will not.
+Where possible, use local control for smart home devices that are natively supported by Home Assistant (lights, garage door openers, etc.). Locally controlled devices will continue to work during internet outages whereas this integration will not.
 
 ## Features
 
 - **4-step authentication** with OTP/2FA and device trust support
 - **Async REST client** with AFG anti-forgery token handling
-- **3-task WebSocket client** (reader / processor / keepalive) for real-time push updates
+- **2-task WebSocket client** (reader / processor) for real-time push updates
 - **Full `DeviceStatusUpdate` bitmask handling** — fixes a known gap in community libraries
 - **JWT expiry detection** — close code 1008 triggers automatic re-auth and reconnect
 - **JWT key version rotation** — tries `ver=A` then falls back to `ver=B`
@@ -196,14 +196,14 @@ await bridge.refresh_all()
 
 ```
 pyadc/
-├── __init__.py          # AlarmBridge — main entry point, wires everything together
+├── __init__.py          # AlarmBridge — main entry point, controller registry
 ├── auth.py              # AuthController — 4-step login, OTP, WS token, keep-alive
 ├── client.py            # AdcClient — aiohttp wrapper, AFG token, error mapping
 ├── const.py             # All URLs, enums (ArmingState, DeviceStatusFlags, etc.)
 ├── events.py            # EventBroker — pub/sub for device state changes
 ├── exceptions.py        # Exception hierarchy rooted at PyadcException
 ├── models/              # Dataclasses for every device type
-│   ├── base.py          # AdcResource, AdcDeviceResource (apply_status_flags)
+│   ├── base.py          # AdcResource, AdcDeviceResource, _parse_enum(), _extract_attrs()
 │   ├── partition.py
 │   ├── sensor.py
 │   ├── lock.py
@@ -217,7 +217,7 @@ pyadc/
 │   ├── camera.py
 │   └── system.py
 ├── controllers/         # Per-device REST + WS event handling
-│   ├── base.py          # BaseController with _event_state_map dispatch
+│   ├── base.py          # BaseController — _event_state_map dispatch, _request_with_retry()
 │   ├── partition.py     # arm/disarm actions
 │   ├── sensor.py        # bypass/unbypass
 │   ├── lock.py
@@ -230,7 +230,7 @@ pyadc/
 │   ├── image_sensor.py  # peek_in_now
 │   └── system.py
 └── websocket/
-    ├── client.py        # 3-task WS client (reader/processor/keepalive)
+    ├── client.py        # 2-task WS client (reader/processor)
     └── messages.py      # WebSocketMessageParser + typed message dataclasses
 ```
 
@@ -242,9 +242,8 @@ AlarmBridge.initialize()
   └── Each controller.fetch_all()     REST: load all devices
 
 AlarmBridge.start_websocket()
-  └── WebSocketClient._reader_task    WS: receive frames → queue
+  └── WebSocketClient._reader_task    WS: receive frames → queue (reconnects on close)
   └── WebSocketClient._processor_task queue → WebSocketMessageParser → EventBroker.publish()
-  └── WebSocketClient._keepalive_task ping every 60s
 
 EventBroker.publish()
   └── BaseController._handle_raw_event()
@@ -290,9 +289,10 @@ EventBroker.publish()
            await self._bridge.client.post(f"{self.resource_type}/{device_id}/action", {})
    ```
 
-4. **Wire it in `AlarmBridge`** (`__init__.py`):
-   - Add `self.my_devices = MyDeviceController(self)` in `__init__`
-   - Add `self.my_devices.fetch_all()` to both `initialize()` and `refresh_all()`
+4. **Register in `AlarmBridge`** (`__init__.py`):
+   - Add `("my_devices", MyDeviceController)` to `_CONTROLLER_REGISTRY`
+   - Add a type annotation: `my_devices: MyDeviceController`
+   - That's it — `__init__` and `_fetch_all_devices()` iterate the registry automatically.
 
 5. **Add tests** in `tests/test_models.py` and `tests/test_websocket_messages.py`.
 
