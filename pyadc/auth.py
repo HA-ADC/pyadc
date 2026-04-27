@@ -7,6 +7,10 @@ the long-running keep-alive loop that prevents session expiry.
 
 from __future__ import annotations
 
+__all__ = [
+    "AuthController",
+]
+
 import asyncio
 import logging
 import re
@@ -385,7 +389,7 @@ class AuthController:
                     all_cookies,
                 )
         except Exception:
-            pass
+            log.debug("Failed to extract seamless token from cookie jar", exc_info=True)
 
     async def _scrape_login_page(self) -> None:
         """GET login page and dynamically extract ALL form field names and values.
@@ -659,7 +663,7 @@ class AuthController:
                         log.info("trust_device: MFA cookie from jar scan (len=%d)", len(self._mfa_cookie))
                         break
             except Exception:
-                pass
+                log.debug("Failed to scan cookie jar for MFA cookie", exc_info=True)
             if not self._mfa_cookie:
                 log.warning("trust_device: twoFactorAuthenticationId cookie not found after trust call")
 

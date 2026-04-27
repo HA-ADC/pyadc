@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Self
 
 from pyadc.const import DeviceStatusFlags, DeviceType, LightState, ResourceType, DEVICE_TYPE_LABELS
-from pyadc.models.base import AdcDeviceResource, _camel_to_snake
+from pyadc.models.base import AdcDeviceResource, _parse_enum, _extract_attrs
 
 
 @dataclass
@@ -58,14 +58,9 @@ class Light(AdcDeviceResource):
     @classmethod
     def from_json_api(cls, data: dict[str, Any]) -> Self:
         """Parse from JSON:API resource object."""
-        attrs = data.get("attributes", {})
-        snake_attrs = {_camel_to_snake(k): v for k, v in attrs.items()}
-
-        raw_state = snake_attrs.get("state")
-        try:
-            state = LightState(raw_state) if raw_state is not None else LightState.NO_STATE
-        except ValueError:
-            state = LightState.NO_STATE
+        resource_id, name, snake_attrs = _extract_attrs(data)
+        state = _parse_enum(snake_attrs, "state", LightState, LightState.NO_STATE)
+        device_type = _parse_enum(snake_attrs, "device_type", DeviceType, DeviceType.LIGHT_SWITCH_CONTROL)
 
         # Parse RGB color from hex string if available
         rgb_color: tuple[int, int, int] | None = None
@@ -88,15 +83,8 @@ class Light(AdcDeviceResource):
         color_format = snake_attrs.get("light_color_format")
         light_color_format: str | None = None
         if color_format is not None:
-            # Map enum int values to string names
             _format_map = {0: None, 1: "RGBW", 2: "RGB", 3: "WARM_TO_COOL", 4: "HSV"}
             light_color_format = _format_map.get(color_format, str(color_format))
-
-        raw_device_type = snake_attrs.get("device_type")
-        try:
-            device_type = DeviceType(raw_device_type) if raw_device_type is not None else DeviceType.LIGHT_SWITCH_CONTROL
-        except ValueError:
-            device_type = DeviceType.LIGHT_SWITCH_CONTROL
 
         device_icon = snake_attrs.get("device_icon") or {}
         icon_id: int | None = None
@@ -106,8 +94,8 @@ class Light(AdcDeviceResource):
             icon_id = None
 
         return cls(
-            resource_id=data.get("id", ""),
-            name=snake_attrs.get("description", ""),
+            resource_id=resource_id,
+            name=name,
             state=state,
             device_type=device_type,
             brightness=brightness,

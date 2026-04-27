@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Self
 
 from pyadc.const import ResourceType
-from pyadc.models.base import AdcDeviceResource, _camel_to_snake
+from pyadc.models.base import AdcDeviceResource, _camel_to_snake, _extract_attrs
 
 
 @dataclass
@@ -83,8 +83,7 @@ class Camera(AdcDeviceResource):
     @classmethod
     def from_json_api(cls, data: dict[str, Any]) -> Self:
         """Parse from a JSON:API resource object."""
-        attrs = data.get("attributes", {})
-        snake = {_camel_to_snake(k): v for k, v in attrs.items()}
+        resource_id, name, snake_attrs = _extract_attrs(data)
 
         # Extract liveVideoSource relationship ID
         rels = data.get("relationships", {})
@@ -98,7 +97,7 @@ class Camera(AdcDeviceResource):
                 video_source_id = rel.get("id")
                 break
 
-        port_raw = snake.get("port")
+        port_raw = snake_attrs.get("port")
         port: int | None = None
         if port_raw is not None:
             try:
@@ -107,19 +106,19 @@ class Camera(AdcDeviceResource):
                 port = None
 
         return cls(
-            resource_id=data.get("id", ""),
-            name=snake.get("description", snake.get("name", "")),
-            private_ip=snake.get("private_ip"),
-            public_ip=snake.get("public_ip"),
+            resource_id=resource_id,
+            name=name,
+            private_ip=snake_attrs.get("private_ip"),
+            public_ip=snake_attrs.get("public_ip"),
             port=port,
-            username=snake.get("username"),
-            device_model=snake.get("device_model"),
-            firmware_version=snake.get("firmware_version"),
-            mac_address=snake.get("mac_address"),
-            can_take_snapshot=bool(snake.get("can_take_snapshot", False)),
-            supports_live_view=bool(snake.get("supports_live_view", False)),
+            username=snake_attrs.get("username"),
+            device_model=snake_attrs.get("device_model"),
+            firmware_version=snake_attrs.get("firmware_version"),
+            mac_address=snake_attrs.get("mac_address"),
+            can_take_snapshot=bool(snake_attrs.get("can_take_snapshot", False)),
+            supports_live_view=bool(snake_attrs.get("supports_live_view", False)),
             live_video_source_id=video_source_id,
-            battery_level_pct=snake.get("battery_level_null"),
+            battery_level_pct=snake_attrs.get("battery_level_null"),
         )
 
     @property

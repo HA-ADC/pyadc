@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Self
 
 from pyadc.const import CoverState, ResourceType
-from pyadc.models.base import AdcDeviceResource, _camel_to_snake
+from pyadc.models.base import AdcDeviceResource, _parse_enum, _extract_attrs
 
 # WS BITFLAG_STATE bits → CoverState
 _WS_BITS_TO_COVER = {0: CoverState.CLOSED, 1: CoverState.OPEN, 2: CoverState.OPENING, 3: CoverState.CLOSING}
@@ -14,26 +14,12 @@ _WS_BITS_TO_COVER = {0: CoverState.CLOSED, 1: CoverState.OPEN, 2: CoverState.OPE
 
 def _parse_cover(cls: type, data: dict[str, Any], resource_type: str) -> Any:
     """Shared parsing logic for cover devices."""
-    attrs = data.get("attributes", {})
-    snake_attrs = {_camel_to_snake(k): v for k, v in attrs.items()}
-
-    raw_state = snake_attrs.get("state")
-    try:
-        state = CoverState(raw_state) if raw_state is not None else CoverState.UNKNOWN
-    except ValueError:
-        state = CoverState.UNKNOWN
-
-    raw_desired = snake_attrs.get("desired_state")
-    try:
-        desired_state = CoverState(raw_desired) if raw_desired is not None else None
-    except ValueError:
-        desired_state = None
-
+    resource_id, name, snake_attrs = _extract_attrs(data)
     return cls(
-        resource_id=data.get("id", ""),
-        name=snake_attrs.get("description", ""),
-        state=state,
-        desired_state=desired_state,
+        resource_id=resource_id,
+        name=name,
+        state=_parse_enum(snake_attrs, "state", CoverState, CoverState.UNKNOWN),
+        desired_state=_parse_enum(snake_attrs, "desired_state", CoverState, None),
         battery_level_pct=snake_attrs.get("battery_level_null"),
     )
 

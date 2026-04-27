@@ -22,6 +22,39 @@ def _camel_to_snake(name: str) -> str:
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
+def _parse_enum(snake_attrs: dict[str, Any], key: str, enum_cls: type, default: Any) -> Any:
+    """Parse an enum value from the snake_attrs dict with safe fallback.
+
+    Args:
+        snake_attrs: The camel→snake converted attributes dict.
+        key: Attribute key to look up (e.g. "state", "desired_state").
+        enum_cls: The enum class to instantiate (e.g. LockState).
+        default: Default value when the key is missing or the value is invalid.
+    """
+    raw = snake_attrs.get(key)
+    if raw is None:
+        return default
+    try:
+        return enum_cls(raw)
+    except ValueError:
+        return default
+
+
+def _extract_attrs(data: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    """Extract common fields from a JSON:API resource object.
+
+    Returns:
+        A tuple of (resource_id, name, snake_attrs).
+    """
+    attrs = data.get("attributes", {})
+    if not isinstance(attrs, dict):
+        attrs = {}
+    snake_attrs = {_camel_to_snake(k): v for k, v in attrs.items()}
+    resource_id = data.get("id", "")
+    name = snake_attrs.get("description", snake_attrs.get("name", ""))
+    return resource_id, name, snake_attrs
+
+
 @dataclass
 class AdcResource:
     """Base class for all ADC JSON:API resources.
@@ -93,6 +126,9 @@ class AdcDeviceResource(AdcResource):
     comm_failure: bool = False
     is_disabled: bool = False
     bypassed: bool = False
+    # API field is "batteryLevelNull" (camelCase) — the "Null" suffix is ADC's
+    # convention for nullable integers.  After camel→snake conversion this
+    # becomes "battery_level_null" in the parsed attributes dict.
     battery_level_pct: int | None = None
 
     def apply_status_flags(self, new_state: int, flag_mask: int) -> None:

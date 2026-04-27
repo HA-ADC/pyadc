@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Self
 
 from pyadc.const import ResourceType, ValveState
-from pyadc.models.base import AdcDeviceResource, _camel_to_snake
+from pyadc.models.base import AdcDeviceResource, _parse_enum, _extract_attrs
 
 log = logging.getLogger(__name__)
 
@@ -42,24 +42,12 @@ class WaterValve(AdcDeviceResource):
     @classmethod
     def from_json_api(cls, data: dict[str, Any]) -> Self:
         """Parse from JSON:API resource object."""
-        attrs = data.get("attributes", {})
-        snake_attrs = {_camel_to_snake(k): v for k, v in attrs.items()}
-
+        resource_id, name, snake_attrs = _extract_attrs(data)
         log.debug("WaterValve raw API attrs: %s", snake_attrs)
-
-        # Trust the API state value even when has_state=False — the API
-        # returns a meaningful state integer; has_state only indicates whether
-        # the panel tracks state changes, not whether the current value is valid.
-        raw_state = snake_attrs.get("state")
-        try:
-            state = ValveState(raw_state) if raw_state is not None else ValveState.UNKNOWN
-        except ValueError:
-            state = ValveState.UNKNOWN
-
         return cls(
-            resource_id=data.get("id", ""),
-            name=snake_attrs.get("description", ""),
-            state=state,
+            resource_id=resource_id,
+            name=name,
+            state=_parse_enum(snake_attrs, "state", ValveState, ValveState.UNKNOWN),
             battery_level_pct=snake_attrs.get("battery_level_null"),
         )
 

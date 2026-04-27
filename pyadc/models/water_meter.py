@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, ClassVar, Self
 
-from pyadc.models.base import AdcDeviceResource, _camel_to_snake
+from pyadc.models.base import AdcDeviceResource, _extract_attrs
 
 
 VOLUME_UNIT_GALLONS = 0  # VolumeUnitsEnum.Gallon = 0 in C#
@@ -74,31 +74,30 @@ class WaterMeter(AdcDeviceResource):
 
     @classmethod
     def from_json_api(cls, data: dict[str, Any]) -> Self:
-        attrs = data.get("attributes", {})
-        snake = {_camel_to_snake(k): v for k, v in attrs.items()}
+        resource_id, name, snake_attrs = _extract_attrs(data)
 
-        water_issues = snake.get("water_issues") or []
+        water_issues = snake_attrs.get("water_issues") or []
         has_issues = bool(water_issues)
 
         # volume_unit=0 is Gallons; can't use `or` guard since 0 is falsy.
-        vol = snake.get("volume_unit")
+        vol = snake_attrs.get("volume_unit")
         volume_unit = int(vol) if vol is not None else VOLUME_UNIT_GALLONS
 
-        display_max = snake.get("daily_usage_display_maximum")
+        display_max = snake_attrs.get("daily_usage_display_maximum")
 
         try:
-            usage_today = float(snake.get("water_usage_today") or 0)
+            usage_today = float(snake_attrs.get("water_usage_today") or 0)
         except (ValueError, TypeError):
             usage_today = 0.0
 
-        avg_raw = snake.get("average_daily_water_usage")
+        avg_raw = snake_attrs.get("average_daily_water_usage")
         try:
             average_daily_usage: float | None = float(avg_raw) if avg_raw is not None else None
         except (ValueError, TypeError):
             average_daily_usage = None
 
         try:
-            daily_usage_minimum = float(snake.get("daily_usage_display_minimum") or 0)
+            daily_usage_minimum = float(snake_attrs.get("daily_usage_display_minimum") or 0)
         except (ValueError, TypeError):
             daily_usage_minimum = 0.0
 
@@ -108,8 +107,8 @@ class WaterMeter(AdcDeviceResource):
             daily_usage_maximum = None
 
         return cls(
-            resource_id=data.get("id", ""),
-            name=snake.get("description", ""),
+            resource_id=resource_id,
+            name=name,
             usage_today=usage_today,
             average_daily_usage=average_daily_usage,
             volume_unit=volume_unit,
@@ -117,11 +116,11 @@ class WaterMeter(AdcDeviceResource):
             daily_usage_display_maximum=daily_usage_maximum,
             has_active_issues=has_issues,
             requires_calibration_setup=bool(
-                snake.get("requires_calibration_setup", False)
+                snake_attrs.get("requires_calibration_setup", False)
             ),
-            has_valve=bool(snake.get("has_valve", False)),
-            malfunction=bool(snake.get("is_malfunctioning", False)),
-            battery_level_pct=snake.get("battery_level_null"),
+            has_valve=bool(snake_attrs.get("has_valve", False)),
+            malfunction=bool(snake_attrs.get("is_malfunctioning", False)),
+            battery_level_pct=snake_attrs.get("battery_level_null"),
         )
 
     @property

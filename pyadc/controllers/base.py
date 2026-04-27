@@ -215,37 +215,34 @@ class BaseController:
                 "Unhandled event type %s for %s", event_type, self.resource_type
             )
 
-    async def _post(self, path: str, body: dict | None = None) -> dict:
-        """POST with automatic re-login retry on 401/403 (session/token expiry).
+    async def _request_with_retry(self, method: str, path: str, body: dict | None = None) -> dict:
+        """Execute an HTTP request with automatic re-login retry on auth failure.
 
-        ADC HTTP sessions expire after ~20 min of inactivity (WS pings don't
-        count). If a command returns 401 (stale AFG token) or 403 (expired
-        session cookie), we re-login once and retry.
+        ADC HTTP sessions expire after ~20 min of inactivity. If a request
+        returns 401 (stale AFG token) or 403 (expired session cookie), we
+        re-login once and retry.
         """
+        client = self._bridge.client
+        request_fn = getattr(client, method)
+        args = (path, body or {}) if method in ("post", "put") else (path,)
         try:
-            return await self._bridge.client.post(path, body or {})
+            return await request_fn(*args)
         except (NotAuthorized, AuthenticationFailed):
-            log.info("Auth failure on POST %s — re-authenticating and retrying", path)
+            log.info("Auth failure on %s %s — re-authenticating and retrying", method.upper(), path)
             await self._bridge.auth.login()
-            return await self._bridge.client.post(path, body or {})
+            return await request_fn(*args)
+
+    async def _post(self, path: str, body: dict | None = None) -> dict:
+        """POST with automatic re-login retry on 401/403."""
+        return await self._request_with_retry("post", path, body)
 
     async def _get(self, path: str) -> dict:
-        """GET with automatic re-login retry on 401/403 (session/token expiry)."""
-        try:
-            return await self._bridge.client.get(path)
-        except (NotAuthorized, AuthenticationFailed):
-            log.info("Auth failure on GET %s — re-authenticating and retrying", path)
-            await self._bridge.auth.login()
-            return await self._bridge.client.get(path)
+        """GET with automatic re-login retry on 401/403."""
+        return await self._request_with_retry("get", path)
 
     async def _put(self, path: str, body: dict | None = None) -> dict:
-        """PUT with automatic re-login retry on 401/403 (session/token expiry)."""
-        try:
-            return await self._bridge.client.put(path, body or {})
-        except (NotAuthorized, AuthenticationFailed):
-            log.info("Auth failure on PUT %s — re-authenticating and retrying", path)
-            await self._bridge.auth.login()
-            return await self._bridge.client.put(path, body or {})
+        """PUT with automatic re-login retry on 401/403."""
+        return await self._request_with_retry("put", path, body)
 
     def _handle_monitor_event(self, msg: MonitorEventWSMessage, event_type: ResourceEventType | str | int) -> None:
         """Handle a MonitorEventWSMessage. Override in subclasses for event_value access."""

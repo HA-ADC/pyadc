@@ -8,7 +8,7 @@ from typing import Any, ClassVar, Self
 from pyadc.const import ArmingState, ResourceType
 # WS state bits (BITFLAG_STATE 0x3) → ArmingState
 _WS_BITS_TO_ARMING = {0: ArmingState.DISARMED, 1: ArmingState.ARMED_STAY, 2: ArmingState.ARMED_AWAY, 3: ArmingState.ARMED_NIGHT}
-from pyadc.models.base import AdcDeviceResource, _camel_to_snake
+from pyadc.models.base import AdcDeviceResource, _parse_enum, _extract_attrs
 
 
 @dataclass
@@ -51,26 +51,12 @@ class Partition(AdcDeviceResource):
     @classmethod
     def from_json_api(cls, data: dict[str, Any]) -> Self:
         """Parse from JSON:API resource object."""
-        attrs = data.get("attributes", {})
-        snake_attrs = {_camel_to_snake(k): v for k, v in attrs.items()}
-
-        raw_state = snake_attrs.get("state")
-        try:
-            state = ArmingState(raw_state) if raw_state is not None else ArmingState.DISARMED
-        except ValueError:
-            state = ArmingState.DISARMED
-
-        raw_desired = snake_attrs.get("desired_state")
-        try:
-            desired_state = ArmingState(raw_desired) if raw_desired is not None else None
-        except ValueError:
-            desired_state = None
-
+        resource_id, name, snake_attrs = _extract_attrs(data)
         return cls(
-            resource_id=data.get("id", ""),
-            name=snake_attrs.get("description", ""),
-            state=state,
-            desired_state=desired_state,
+            resource_id=resource_id,
+            name=name,
+            state=_parse_enum(snake_attrs, "state", ArmingState, ArmingState.DISARMED),
+            desired_state=_parse_enum(snake_attrs, "desired_state", ArmingState, None),
             uncleared_issues=snake_attrs.get("uncleared_issues", False),
             force_bypass_available=snake_attrs.get("force_bypass_available", False),
             no_entry_delay_available=snake_attrs.get("no_entry_delay_available", False),

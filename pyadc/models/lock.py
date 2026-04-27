@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Self
 
 from pyadc.const import DeviceStatusFlags, LockState, ResourceType
-from pyadc.models.base import AdcDeviceResource, _camel_to_snake
+from pyadc.models.base import AdcDeviceResource, _parse_enum, _extract_attrs
 
 
 @dataclass
@@ -29,26 +29,12 @@ class Lock(AdcDeviceResource):
     @classmethod
     def from_json_api(cls, data: dict[str, Any]) -> Self:
         """Parse from JSON:API resource object."""
-        attrs = data.get("attributes", {})
-        snake_attrs = {_camel_to_snake(k): v for k, v in attrs.items()}
-
-        raw_state = snake_attrs.get("state")
-        try:
-            state = LockState(raw_state) if raw_state is not None else LockState.UNKNOWN
-        except ValueError:
-            state = LockState.UNKNOWN
-
-        raw_desired = snake_attrs.get("desired_state")
-        try:
-            desired_state = LockState(raw_desired) if raw_desired is not None else None
-        except ValueError:
-            desired_state = None
-
+        resource_id, name, snake_attrs = _extract_attrs(data)
         return cls(
-            resource_id=data.get("id", ""),
-            name=snake_attrs.get("description", ""),
-            state=state,
-            desired_state=desired_state,
+            resource_id=resource_id,
+            name=name,
+            state=_parse_enum(snake_attrs, "state", LockState, LockState.UNKNOWN),
+            desired_state=_parse_enum(snake_attrs, "desired_state", LockState, None),
             supports_temporary_user_codes=snake_attrs.get("supports_temporary_user_codes", False),
             max_user_code_length=snake_attrs.get("max_user_code_length", 0),
             battery_level_pct=snake_attrs.get("battery_level_null"),

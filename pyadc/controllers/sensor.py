@@ -21,6 +21,8 @@ _COMMERCIAL_TEMP_RESOURCE = "devices/commercialTemperatureSensors"
 
 
 class SensorController(BaseController):
+    """Controller for Alarm.com sensors (doors, windows, motion, temperature)."""
+
     resource_type = ResourceType.SENSOR
     model_class = Sensor
     _event_state_map = {

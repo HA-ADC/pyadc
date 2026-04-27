@@ -13,6 +13,14 @@ async work from inside a callback.
 
 from __future__ import annotations
 
+__all__ = [
+    "EventBroker",
+    "EventBrokerTopic",
+    "EventBrokerMessage",
+    "ResourceEventMessage",
+    "EventBrokerCallbackT",
+]
+
 import logging
 from collections import defaultdict
 from collections.abc import Callable

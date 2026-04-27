@@ -39,6 +39,12 @@ fails (i.e. the HTTP session has also expired).
 
 from __future__ import annotations
 
+__all__ = [
+    "WebSocketClient",
+    "WebSocketState",
+    "ConnectionEvent",
+]
+
 import asyncio
 import json
 import logging

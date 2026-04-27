@@ -2,6 +2,20 @@
 
 from __future__ import annotations
 
+__all__ = [
+    "PyadcException",
+    "AuthenticationFailed",
+    "MustConfigureMfa",
+    "OtpRequired",
+    "SessionExpired",
+    "ServiceUnavailable",
+    "UnexpectedResponse",
+    "NotAuthorized",
+    "UnknownDevice",
+    "UnsupportedOperation",
+    "NotInitialized",
+]
+
 
 class PyadcException(Exception):
     """Base exception for pyadc."""

@@ -43,6 +43,10 @@ from pyadc.websocket.client import WebSocketClient
 
 log = logging.getLogger(__name__)
 
+__all__ = [
+    "AlarmBridge",
+]
+
 
 class AlarmBridge:
     """Main entry point for the pyadc library.
@@ -84,6 +88,37 @@ class AlarmBridge:
         image_sensors: :class:`~pyadc.controllers.image_sensor.ImageSensorController`
         systems: :class:`~pyadc.controllers.system.SystemController`
     """
+
+    _CONTROLLER_REGISTRY: tuple[tuple[str, type], ...] = (
+        ("systems", SystemController),
+        ("cameras", CameraController),
+        ("partitions", PartitionController),
+        ("sensors", SensorController),
+        ("locks", LockController),
+        ("lights", LightController),
+        ("thermostats", ThermostatController),
+        ("garage_doors", GarageDoorController),
+        ("gates", GateController),
+        ("water_valves", ValveController),
+        ("water_sensors", WaterSensorController),
+        ("water_meters", WaterMeterController),
+        ("image_sensors", ImageSensorController),
+    )
+
+    # Type annotations for IDE autocompletion (set dynamically in __init__)
+    systems: SystemController
+    cameras: CameraController
+    partitions: PartitionController
+    sensors: SensorController
+    locks: LockController
+    lights: LightController
+    thermostats: ThermostatController
+    garage_doors: GarageDoorController
+    gates: GateController
+    water_valves: ValveController
+    water_sensors: WaterSensorController
+    water_meters: WaterMeterController
+    image_sensors: ImageSensorController
 
     def __init__(
         self,
@@ -137,25 +172,27 @@ class AlarmBridge:
         )
         self.websocket = WebSocketClient(self)
 
-        # Device controllers
-        self.cameras = CameraController(self)
-        self.partitions = PartitionController(self)
-        self.sensors = SensorController(self)
-        self.locks = LockController(self)
-        self.lights = LightController(self)
-        self.thermostats = ThermostatController(self)
-        self.garage_doors = GarageDoorController(self)
-        self.gates = GateController(self)
-        self.water_valves = ValveController(self)
-        self.water_sensors = WaterSensorController(self)
-        self.water_meters = WaterMeterController(self)
-        self.image_sensors = ImageSensorController(self)
-        self.systems = SystemController(self)
+        # Device controllers (instantiated from registry)
+        for attr_name, controller_cls in self._CONTROLLER_REGISTRY:
+            setattr(self, attr_name, controller_cls(self))
 
     @property
     def initialized(self) -> bool:
         """Return ``True`` after :meth:`initialize` has completed successfully."""
         return self._initialized
+
+    async def _fetch_all_devices(self) -> None:
+        """Fetch all device types in parallel, capped at 3 concurrent REST calls."""
+        sem = asyncio.Semaphore(3)
+
+        async def _limited(coro):
+            async with sem:
+                return await coro
+
+        await asyncio.gather(
+            *(_limited(getattr(self, name).fetch_all()) for name, _ in self._CONTROLLER_REGISTRY),
+            return_exceptions=True,
+        )
 
     async def initialize(self) -> None:
         """Authenticate and fetch all device state via REST.
@@ -173,32 +210,7 @@ class AlarmBridge:
             AuthenticationFailed: On invalid credentials or locked account.
         """
         await self.auth.login()
-
-        # Fetch all device types in parallel, capped at 3 concurrent REST calls
-        # to avoid hammering the backend during initialisation.
-        sem = asyncio.Semaphore(3)
-
-        async def _limited(coro):
-            async with sem:
-                return await coro
-
-        await asyncio.gather(
-            _limited(self.systems.fetch_all()),
-            _limited(self.cameras.fetch_all()),
-            _limited(self.partitions.fetch_all()),
-            _limited(self.sensors.fetch_all()),
-            _limited(self.locks.fetch_all()),
-            _limited(self.lights.fetch_all()),
-            _limited(self.thermostats.fetch_all()),
-            _limited(self.garage_doors.fetch_all()),
-            _limited(self.gates.fetch_all()),
-            _limited(self.water_valves.fetch_all()),
-            _limited(self.water_sensors.fetch_all()),
-            _limited(self.water_meters.fetch_all()),
-            _limited(self.image_sensors.fetch_all()),
-            return_exceptions=True,
-        )
-
+        await self._fetch_all_devices()
         await self.auth.start_keep_alive()
         self._initialized = True
         log.info("AlarmBridge initialized successfully")
@@ -224,28 +236,7 @@ class AlarmBridge:
         Useful for a manual refresh or after a WebSocket reconnect to fill any
         state gaps that occurred while the connection was down.
         """
-        sem = asyncio.Semaphore(3)
-
-        async def _limited(coro):
-            async with sem:
-                return await coro
-
-        await asyncio.gather(
-            _limited(self.systems.fetch_all()),
-            _limited(self.cameras.fetch_all()),
-            _limited(self.partitions.fetch_all()),
-            _limited(self.sensors.fetch_all()),
-            _limited(self.locks.fetch_all()),
-            _limited(self.lights.fetch_all()),
-            _limited(self.thermostats.fetch_all()),
-            _limited(self.garage_doors.fetch_all()),
-            _limited(self.gates.fetch_all()),
-            _limited(self.water_valves.fetch_all()),
-            _limited(self.water_sensors.fetch_all()),
-            _limited(self.water_meters.fetch_all()),
-            _limited(self.image_sensors.fetch_all()),
-            return_exceptions=True,
-        )
+        await self._fetch_all_devices()
 
     # --- Convenience pass-through action methods ---
     # These delegate to the relevant controller so callers don't need to

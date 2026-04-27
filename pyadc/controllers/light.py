@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from pyadc.const import ResourceEventType, ResourceType
 from pyadc.controllers.base import BaseController, _validate_device_id
+from pyadc.events import ResourceEventMessage
 from pyadc.models.light import Light, LightState
 from pyadc.websocket.messages import MonitorEventWSMessage, PropertyChangeWSMessage
 
@@ -19,6 +20,8 @@ _PROPERTY_LIGHT_LEVEL = 4
 
 
 class LightController(BaseController):
+    """Controller for Alarm.com Z-Wave light/dimmer devices."""
+
     resource_type = ResourceType.LIGHT
     model_class = Light
     _event_state_map = {
@@ -115,7 +118,6 @@ class LightController(BaseController):
                 )
                 device.brightness = new_level
                 device.state = LightState.LEVEL_CHANGE if new_level > 0 else LightState.OFF
-                from pyadc.events import ResourceEventMessage
                 self._bridge.event_broker.publish(
                     ResourceEventMessage(
                         device_id=device.resource_id,
@@ -126,9 +128,11 @@ class LightController(BaseController):
                 # color changes via WebSocket, but a color change in ADC often
                 # also fires SwitchLevelChanged, so we piggyback here.
                 if device.supports_rgb:
-                    asyncio.ensure_future(
-                        self._refresh_rgb_color(device.resource_id)
+                    task = asyncio.create_task(
+                        self._refresh_rgb_color(device.resource_id),
+                        name=f"pyadc-rgb-refresh-{device.resource_id}",
                     )
+                    task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
                 return
         super()._handle_monitor_event(msg, event_type)
 
@@ -166,7 +170,6 @@ class LightController(BaseController):
                 resource_id, device.rgb_color, new_color,
             )
             device.rgb_color = new_color
-            from pyadc.events import ResourceEventMessage
             self._bridge.event_broker.publish(
                 ResourceEventMessage(
                     device_id=resource_id,
@@ -191,7 +194,6 @@ class LightController(BaseController):
                 )
                 return
             device.state = LightState.LEVEL_CHANGE
-            from pyadc.events import ResourceEventMessage
 
             self._bridge.event_broker.publish(
                 ResourceEventMessage(

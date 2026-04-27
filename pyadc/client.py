@@ -7,6 +7,10 @@ code should go through this client rather than using aiohttp directly.
 
 from __future__ import annotations
 
+__all__ = [
+    "AdcClient",
+]
+
 import logging
 from typing import Any
 
@@ -62,6 +66,11 @@ class AdcClient:
         self._mfa_cookie: str = ""  # twoFactorAuthenticationId — injected into every request
         self._api_url_base: str = f"{base_url}/web/api/"
         self._referrer: str = f"{base_url}/web/system/home"
+
+    @property
+    def session(self) -> aiohttp.ClientSession:
+        """The underlying aiohttp session (needed by JanusSession)."""
+        return self._session
 
     def _build_headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         """Build the full set of request headers.
@@ -180,7 +189,7 @@ class AdcClient:
             await self._check_response(resp)
             try:
                 return await resp.json(content_type=None)
-            except Exception as exc:
+            except (ValueError, aiohttp.ContentTypeError) as exc:
                 log.debug("Failed to parse POST response as JSON: %s", exc)
                 return {}
 
@@ -218,9 +227,34 @@ class AdcClient:
             await self._check_response(resp)
             try:
                 return await resp.json(content_type=None)
-            except Exception as exc:
+            except (ValueError, aiohttp.ContentTypeError) as exc:
                 log.debug("Failed to parse PUT response as JSON: %s", exc)
                 return {}
+
+    async def fetch_bytes(self, url: str) -> bytes:
+        """Fetch raw bytes from a URL using the current session credentials.
+
+        Useful for downloading binary resources (e.g. camera snapshots) that
+        require authenticated headers but return non-JSON content.
+
+        Args:
+            url: Absolute URL to fetch.
+
+        Returns:
+            Raw response body as bytes.
+
+        Raises:
+            AuthenticationFailed: HTTP 401.
+            NotAuthorized: HTTP 403.
+            ServiceUnavailable: HTTP 5xx.
+            UnexpectedResponse: Any other non-200 status.
+        """
+        async with self._session.get(
+            url, headers=self._build_headers(), cookies=self._mfa_cookies()
+        ) as resp:
+            self._update_afg_from_response(resp)
+            await self._check_response(resp)
+            return await resp.read()
 
     async def _check_response(self, resp: aiohttp.ClientResponse) -> None:
         """Raise appropriate exception for error HTTP status codes."""

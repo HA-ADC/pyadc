@@ -12,7 +12,7 @@ from pyadc.const import (
     ThermostatSetpointType,
     ThermostatTemperatureMode,
 )
-from pyadc.models.base import AdcDeviceResource, _camel_to_snake
+from pyadc.models.base import AdcDeviceResource, _parse_enum, _extract_attrs
 
 
 @dataclass
@@ -61,14 +61,12 @@ class Thermostat(AdcDeviceResource):
     @classmethod
     def from_json_api(cls, data: dict[str, Any]) -> Self:
         """Parse from JSON:API resource object."""
-        attrs = data.get("attributes", {})
-        snake_attrs = {_camel_to_snake(k): v for k, v in attrs.items()}
+        resource_id, name, snake_attrs = _extract_attrs(data)
 
-        raw_state = snake_attrs.get("state")
         # inferredState is what ADC actually displays (e.g. AUTO=3 even when
         # the raw Z-Wave state reports AUX_HEAT=4). Fall back to state if absent.
         raw_inferred = snake_attrs.get("inferred_state")
-        raw_mode = raw_inferred if raw_inferred is not None else raw_state
+        raw_mode = raw_inferred if raw_inferred is not None else snake_attrs.get("state")
         try:
             state = ThermostatTemperatureMode(raw_mode) if raw_mode is not None else ThermostatTemperatureMode.OFF
         except ValueError:
@@ -92,23 +90,9 @@ class Thermostat(AdcDeviceResource):
                 ThermostatTemperatureMode.AUTO,
             ]
 
-        raw_fan = snake_attrs.get("fan_mode")
-        try:
-            fan_mode = ThermostatFanMode(raw_fan) if raw_fan is not None else ThermostatFanMode.AUTO_LOW
-        except ValueError:
-            fan_mode = ThermostatFanMode.AUTO_LOW
-
-        raw_op = snake_attrs.get("operating_state")
-        try:
-            operating_state = ThermostatOperatingState(raw_op) if raw_op is not None else None
-        except ValueError:
-            operating_state = None
-
-        raw_setpoint = snake_attrs.get("setpoint_type")
-        try:
-            setpoint_type = ThermostatSetpointType(raw_setpoint) if raw_setpoint is not None else None
-        except ValueError:
-            setpoint_type = None
+        fan_mode = _parse_enum(snake_attrs, "fan_mode", ThermostatFanMode, ThermostatFanMode.AUTO_LOW)
+        operating_state = _parse_enum(snake_attrs, "operating_state", ThermostatOperatingState, None)
+        setpoint_type = _parse_enum(snake_attrs, "setpoint_type", ThermostatSetpointType, None)
 
         uses_celsius = snake_attrs.get("uses_celsius", False)
         # Fallback: detect Celsius from ambient temp or setpoint range if flag absent.
@@ -125,8 +109,8 @@ class Thermostat(AdcDeviceResource):
                 pass
 
         return cls(
-            resource_id=data.get("id", ""),
-            name=snake_attrs.get("description", ""),
+            resource_id=resource_id,
+            name=name,
             state=state,
             operating_state=operating_state,
             fan_mode=fan_mode,

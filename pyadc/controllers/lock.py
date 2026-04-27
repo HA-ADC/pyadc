@@ -11,6 +11,8 @@ if TYPE_CHECKING:
 
 
 class LockController(BaseController):
+    """Controller for Alarm.com smart lock devices."""
+
     resource_type = ResourceType.LOCK
     model_class = Lock
     _event_state_map = {

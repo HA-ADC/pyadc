@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from pyadc.const import ResourceEventType, ResourceType, ThermostatFanMode, ThermostatStatus, ThermostatTemperatureMode
 from pyadc.controllers.base import BaseController, _validate_device_id
+from pyadc.events import ResourceEventMessage
 from pyadc.models.thermostat import Thermostat
 from pyadc.websocket.messages import MonitorEventWSMessage, PropertyChangeWSMessage
 
@@ -130,8 +131,6 @@ class ThermostatController(BaseController):
             changed = False
 
         if changed:
-            from pyadc.events import ResourceEventMessage
-
             self._bridge.event_broker.publish(
                 ResourceEventMessage(
                     device_id=device.resource_id,
@@ -164,7 +163,6 @@ class ThermostatController(BaseController):
             except (ValueError, KeyError):
                 log.debug("Unknown thermostat fan mode value: %s", msg.event_value)
 
-        from pyadc.events import ResourceEventMessage
         self._bridge.event_broker.publish(
             ResourceEventMessage(
                 device_id=device.resource_id,
@@ -179,8 +177,6 @@ class ThermostatController(BaseController):
             return
         # Thermostat mode/fan/setpoint changes don't map to a simple state enum;
         # downstream consumers should re-fetch or rely on PropertyChange messages.
-        from pyadc.events import ResourceEventMessage
-
         self._bridge.event_broker.publish(
             ResourceEventMessage(
                 device_id=device.resource_id,

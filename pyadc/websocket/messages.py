@@ -19,6 +19,18 @@ and returns the appropriate typed dataclass.
 
 from __future__ import annotations
 
+__all__ = [
+    "WSMessageType",
+    "BaseWSMessage",
+    "EventWSMessage",
+    "PropertyChangeWSMessage",
+    "DeviceStatusUpdateWSMessage",
+    "MonitorEventWSMessage",
+    "RawResourceEventMessage",
+    "WebSocketMessageParser",
+    "UNDEFINED",
+]
+
 import logging
 from dataclasses import dataclass, field
 from enum import Enum

@@ -31,30 +31,24 @@ class ValveController(BaseController):
             device.transitioning_to = None
         super()._handle_event_by_id(device_id, event_type)
 
-    async def open(self, valve_id: str) -> None:
-        """Open a water valve (optimistic transitioning_to update then POST)."""
+    async def _set_state(self, valve_id: str, target_state: ValveState, action: str) -> None:
+        """Set valve state with optimistic update, then POST command."""
         _validate_device_id(valve_id)
         device: WaterValve | None = self._devices.get(valve_id)
         if device is not None:
-            device.transitioning_to = ValveState.OPEN
+            device.transitioning_to = target_state
             self._bridge.event_broker.publish(
                 ResourceEventMessage(
                     device_id=device.resource_id,
                     device_type=self.resource_type,
                 )
             )
-        await self._post(f"{self.resource_type}/{valve_id}/open", {})
+        await self._post(f"{self.resource_type}/{valve_id}/{action}", {})
+
+    async def open(self, valve_id: str) -> None:
+        """Open a water valve."""
+        await self._set_state(valve_id, ValveState.OPEN, "open")
 
     async def close(self, valve_id: str) -> None:
-        """Close a water valve (optimistic transitioning_to update then POST)."""
-        _validate_device_id(valve_id)
-        device: WaterValve | None = self._devices.get(valve_id)
-        if device is not None:
-            device.transitioning_to = ValveState.CLOSED
-            self._bridge.event_broker.publish(
-                ResourceEventMessage(
-                    device_id=device.resource_id,
-                    device_type=self.resource_type,
-                )
-            )
-        await self._post(f"{self.resource_type}/{valve_id}/close", {})
+        """Close a water valve."""
+        await self._set_state(valve_id, ValveState.CLOSED, "close")

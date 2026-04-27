@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Self
 
 from pyadc.const import DeviceType, DeviceStatusFlags, ResourceType, SensorState, DEVICE_TYPE_LABELS
-from pyadc.models.base import AdcDeviceResource, _camel_to_snake
+from pyadc.models.base import AdcDeviceResource, _parse_enum, _extract_attrs
 
 log = logging.getLogger(__name__)
 
@@ -53,26 +53,12 @@ class Sensor(AdcDeviceResource):
     @classmethod
     def from_json_api(cls, data: dict[str, Any]) -> Self:
         """Parse from JSON:API resource object."""
-        attrs = data.get("attributes", {})
-        snake_attrs = {_camel_to_snake(k): v for k, v in attrs.items()}
-
-        raw_device_type = snake_attrs.get("device_type")
-        try:
-            device_type = DeviceType(raw_device_type) if raw_device_type is not None else DeviceType.CONTACT
-        except ValueError:
-            device_type = DeviceType.CONTACT
-
-        raw_state = snake_attrs.get("state")
-        try:
-            state = SensorState(raw_state) if raw_state is not None else SensorState.UNKNOWN
-        except ValueError:
-            state = SensorState.UNKNOWN
-
+        resource_id, name, snake_attrs = _extract_attrs(data)
         return cls(
-            resource_id=data.get("id", ""),
-            name=snake_attrs.get("description", ""),
-            state=state,
-            device_type=device_type,
+            resource_id=resource_id,
+            name=name,
+            state=_parse_enum(snake_attrs, "state", SensorState, SensorState.UNKNOWN),
+            device_type=_parse_enum(snake_attrs, "device_type", DeviceType, DeviceType.CONTACT),
             bypassed=snake_attrs.get("is_bypassed", False),
             battery_level_pct=snake_attrs.get("battery_level_null"),
         )

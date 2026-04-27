@@ -23,21 +23,18 @@ class GarageDoorController(BaseController):
         ResourceEventType.CLOSED: CoverState.CLOSED,
     }
 
+    async def _toggle(self, device_id: str, action: str) -> None:
+        """Open or close a garage door."""
+        _validate_device_id(device_id)
+        await self._post(f"{self.resource_type}/{device_id}/{action}", {})
+
     async def open(self, device_id: str) -> None:
         """Open a garage door."""
-        _validate_device_id(device_id)
-        await self._post(
-            f"{self.resource_type}/{device_id}/open",
-            {},
-        )
+        await self._toggle(device_id, "open")
 
     async def close(self, device_id: str) -> None:
         """Close a garage door."""
-        _validate_device_id(device_id)
-        await self._post(
-            f"{self.resource_type}/{device_id}/close",
-            {},
-        )
+        await self._toggle(device_id, "close")
 
 
 class GateController(BaseController):
@@ -50,18 +47,15 @@ class GateController(BaseController):
         ResourceEventType.CLOSED: CoverState.CLOSED,
     }
 
+    async def _toggle(self, device_id: str, action: str) -> None:
+        """Open or close a gate."""
+        _validate_device_id(device_id)
+        await self._post(f"{self.resource_type}/{device_id}/{action}", {})
+
     async def open(self, device_id: str) -> None:
         """Open a gate."""
-        _validate_device_id(device_id)
-        await self._post(
-            f"{self.resource_type}/{device_id}/open",
-            {},
-        )
+        await self._toggle(device_id, "open")
 
     async def close(self, device_id: str) -> None:
         """Close a gate."""
-        _validate_device_id(device_id)
-        await self._post(
-            f"{self.resource_type}/{device_id}/close",
-            {},
-        )
+        await self._toggle(device_id, "close")

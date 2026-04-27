@@ -29,6 +29,10 @@ ADC signaling flow (confirmed from proxy-rtc-player.js):
 
 from __future__ import annotations
 
+__all__ = [
+    "JanusSession",
+]
+
 import asyncio
 import json
 import logging
