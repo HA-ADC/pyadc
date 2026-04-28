@@ -50,7 +50,7 @@ def _extract_attrs(data: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
     if not isinstance(attrs, dict):
         attrs = {}
     snake_attrs = {_camel_to_snake(k): v for k, v in attrs.items()}
-    resource_id = data.get("id", "")
+    resource_id = str(data.get("id", ""))
     name = snake_attrs.get("description", snake_attrs.get("name", ""))
     return resource_id, name, snake_attrs
 

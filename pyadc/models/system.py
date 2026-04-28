@@ -22,7 +22,7 @@ class System(AdcResource):
         attrs = data.get("attributes", {})
         snake_attrs = {_camel_to_snake(k): v for k, v in attrs.items()}
         return cls(
-            resource_id=data.get("id", ""),
+            resource_id=str(data.get("id", "")),
             name=snake_attrs.get("description", snake_attrs.get("name", "")),
             unit_id=snake_attrs.get("unit_id", 0),
         )
@@ -43,7 +43,7 @@ class TroubleCondition(AdcResource):
         attrs = data.get("attributes", {})
         snake_attrs = {_camel_to_snake(k): v for k, v in attrs.items()}
         return cls(
-            resource_id=data.get("id", ""),
+            resource_id=str(data.get("id", "")),
             name=snake_attrs.get("description", ""),
             device_id=snake_attrs.get("device_id", ""),
             description=snake_attrs.get("description", ""),

@@ -491,8 +491,14 @@ class JanusSession:
 
         # Cancel feeder tasks before closing PCs so they don't race with teardown.
         feeder_tasks, self._feeder_tasks = self._feeder_tasks, []
-        for task in feeder_tasks:
-            task.cancel()
+        if feeder_tasks:
+            async def _cancel_feeders() -> None:
+                for task in feeder_tasks:
+                    task.cancel()
+            try:
+                await self._worker.run(_cancel_feeders(), timeout=5.0)
+            except Exception:
+                pass
 
         if janus_pc or browser_pc:
             async def _close_pcs() -> None:
@@ -521,18 +527,28 @@ class JanusSession:
         )
 
     async def _aiortc_answer_janus(self, janus_offer_sdp: str) -> str:
-        """Worker-loop: create _janus_pc, answer Janus's offer, return local SDP."""
-        from aiortc import RTCPeerConnection, RTCSessionDescription
-        self._janus_pc = RTCPeerConnection()
+        """Worker-loop: create _janus_pc, answer Janus's offer, return local SDP.
 
-        @self._janus_pc.on("track")
+        IMPORTANT: self._janus_pc stays None until AFTER both remote and local
+        descriptions are set.  _dispatch (HA loop) checks self._janus_pc to decide
+        whether to queue trickle candidates or route them to the worker.  Setting
+        it before setRemoteDescription completes causes "addIceCandidate without
+        remote description" warnings that silently drop ICE candidates.
+        """
+        from aiortc import RTCPeerConnection, RTCSessionDescription
+
+        # Use local var so _dispatch keeps queuing candidates in
+        # _janus_trickle_queue during the entire negotiation window.
+        new_pc = RTCPeerConnection()
+
+        @new_pc.on("track")
         def on_track(track):
             _LOGGER.debug("aiortc received track from Janus: %s", track.kind)
 
         # Send aiortc's ICE candidates back to Janus (via HA loop's WebSocket)
         ha_loop = self._ha_loop
 
-        @self._janus_pc.on("icecandidate")
+        @new_pc.on("icecandidate")
         def on_icecandidate(candidate):
             if candidate is None or ha_loop is None:
                 return
@@ -541,16 +557,20 @@ class JanusSession:
             )
 
         offer = RTCSessionDescription(sdp=janus_offer_sdp, type="offer")
-        await self._janus_pc.setRemoteDescription(offer)
+        await new_pc.setRemoteDescription(offer)
+        answer = await new_pc.createAnswer()
+        await new_pc.setLocalDescription(answer)
 
-        # Drain Janus trickle candidates that arrived before PC was ready
+        # Both descriptions are set — publish the PC so _dispatch routes
+        # subsequent trickle candidates directly instead of queuing them.
+        self._janus_pc = new_pc
+
+        # Drain trickle candidates queued while the PC was being negotiated.
         for cand in self._janus_trickle_queue:
             await self._aiortc_apply_janus_candidate(cand)
         self._janus_trickle_queue.clear()
 
-        answer = await self._janus_pc.createAnswer()
-        await self._janus_pc.setLocalDescription(answer)
-        return self._janus_pc.localDescription.sdp
+        return new_pc.localDescription.sdp
 
     async def _apply_janus_candidate(self, cand_data: dict[str, Any]) -> None:
         """HA loop: forward a Janus trickle candidate to the worker loop."""
@@ -680,8 +700,9 @@ class JanusSession:
                     bridge = _ReconnectableTrack(track.kind)
                     self._reconnectable_tracks[track.kind] = bridge
                     self._browser_pc.addTrack(bridge)
-                    feeder = asyncio.ensure_future(
-                        bridge.feed_from(relay.subscribe(track))
+                    feeder = asyncio.create_task(
+                        bridge.feed_from(relay.subscribe(track)),
+                        name=f"janus-feeder-{track.kind}",
                     )
                     self._feeder_tasks.append(feeder)
                     track_count += 1
@@ -1108,8 +1129,9 @@ class JanusSession:
         for receiver in new_pc.getReceivers():
             if receiver.track and receiver.track.kind in self._reconnectable_tracks:
                 bridge = self._reconnectable_tracks[receiver.track.kind]
-                feeder = asyncio.ensure_future(
-                    bridge.feed_from(relay.subscribe(receiver.track))
+                feeder = asyncio.create_task(
+                    bridge.feed_from(relay.subscribe(receiver.track)),
+                    name=f"janus-feeder-{receiver.track.kind}",
                 )
                 self._feeder_tasks.append(feeder)
                 new_feeder_count += 1
