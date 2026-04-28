@@ -47,21 +47,44 @@ class CameraController(BaseController):
             log.debug("No snapshot URL in response for camera %s: %s", device_id, attrs)
         return url
 
-    async def get_live_video_source(self, camera: Camera) -> LiveVideoSource | None:
+    async def get_live_video_source(
+        self, camera: Camera, *, hd: bool = True
+    ) -> LiveVideoSource | None:
         """Fetch a fresh LiveVideoSource (WebRTC info) for *camera*.
 
         Stream credentials expire in ~1 hour so this is always called fresh.
         Returns ``None`` if the camera has no videoSource relationship or the
         request fails.
+
+        Args:
+            camera: The camera device to fetch stream info for.
+            hd: If ``True`` (default), request the highest-resolution stream
+                via ``liveVideoHighestResSources``.  Falls back to the standard
+                ``liveVideoSources`` endpoint on failure.
         """
         source_id = camera.live_video_source_id or camera.resource_id
-        try:
-            resp = await self._get(
-                f"video/videoSources/liveVideoSources/{source_id}"
-            )
-        except Exception as exc:
-            log.debug("Failed to fetch liveVideoSource for camera %s: %s", camera.resource_id, exc)
-            return None
+
+        if hd:
+            try:
+                resp = await self._get(
+                    f"video/videoSources/liveVideoHighestResSources/{source_id}"
+                )
+                log.debug("Using HD stream for camera %s", camera.resource_id)
+            except Exception as exc:
+                log.debug(
+                    "HD stream unavailable for camera %s, falling back to standard: %s",
+                    camera.resource_id, exc,
+                )
+                hd = False  # fall through to standard endpoint
+
+        if not hd:
+            try:
+                resp = await self._get(
+                    f"video/videoSources/liveVideoSources/{source_id}"
+                )
+            except Exception as exc:
+                log.debug("Failed to fetch liveVideoSource for camera %s: %s", camera.resource_id, exc)
+                return None
 
         data = resp.get("data", {})
         if not data:
