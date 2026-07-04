@@ -44,8 +44,16 @@ import aiohttp
 
 try:
     from aiortc.mediastreams import MediaStreamTrack as _MediaStreamTrack
+
+    HAS_AIORTC = True
 except ImportError:
     _MediaStreamTrack = object  # type: ignore[assignment,misc]
+
+    #: True when the optional ``aiortc`` extra is installed. WebRTC camera
+    #: streaming requires it; ``aiortc`` pins ``av<17.0`` and cannot be a hard
+    #: dependency (Home Assistant ships ``av==17.x``), so it is opt-in via the
+    #: ``pyadc[webrtc]`` extra. All non-streaming functionality works without it.
+    HAS_AIORTC = False
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -261,7 +269,18 @@ class JanusSession:
         Returns:
             SDP answer string to send back to the browser via HA's
             ``send_message(WebRTCAnswer(answer=...))``.
+
+        Raises:
+            JanusError: if the optional ``aiortc`` dependency is not installed.
         """
+        if not HAS_AIORTC:
+            raise JanusError(
+                "WebRTC camera streaming requires the 'aiortc' package, which "
+                "is not installed. Install it with 'pip install pyadc[webrtc]'. "
+                "Note: aiortc requires av<17.0, which may conflict with the "
+                "Home Assistant core environment."
+            )
+
         self._ha_loop = asyncio.get_running_loop()
         self._http_session = http_session
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyadc"
-version = "1.0.0"
+version = "1.0.1"
 description = "Python library for the Alarm.com API"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -19,14 +19,21 @@ classifiers = [
 ]
 dependencies = [
     "aiohttp>=3.9",
-    "aiortc>=1.6.0",
 ]
 
 [project.optional-dependencies]
+# WebRTC camera streaming (Janus bridge) is an opt-in extra. aiortc pulls in
+# PyAV, which pins ``av<17.0``; Home Assistant 2025.x ships ``av==17.x``, so a
+# hard dependency here makes the whole integration unresolvable. Everything
+# except live camera video works without it — see pyadc/janus.py.
+webrtc = [
+    "aiortc>=1.6.0",
+]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
     "aioresponses>=0.7",
+    "aiortc>=1.6.0",
 ]
 
 [tool.setuptools.packages.find]

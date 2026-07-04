@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 from pyadc.const import ResourceType
 from pyadc.controllers.base import BaseController
@@ -92,10 +93,20 @@ class CameraController(BaseController):
 
         source = LiveVideoSource.from_json_api(data)
         camera.live_video_source = source
+        # Redacted diagnostic: log only the scheme + host of proxy_url so we can
+        # tell whether it is a directly-reachable RTSP source (→ go2rtc can pull
+        # it and bypass Janus/aiortc) or an ADC-internal address. The path/query
+        # is NOT logged because it can carry short-lived auth tokens.
+        proxy_scheme = proxy_host = None
+        if source.proxy_url:
+            parsed = urlparse(source.proxy_url)
+            proxy_scheme, proxy_host = parsed.scheme, parsed.hostname
         log.debug(
-            "LiveVideoSource for camera %s: isMjpeg=%s proxy_url_len=%s janus=%s",
+            "LiveVideoSource for camera %s: isMjpeg=%s proxy=%s://%s (len=%s) janus=%s",
             camera.resource_id,
             source.is_mjpeg,
+            proxy_scheme,
+            proxy_host,
             len(source.proxy_url or ""),
             source.janus_gateway_url,
         )
