@@ -7,18 +7,62 @@ WebRTC stream info and ``video/snapshots/{id}`` for still images.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
-from pyadc.const import ResourceType
+from pyadc.const import ResourceEventType, ResourceType
 from pyadc.controllers.base import BaseController
+from pyadc.events import ResourceEventMessage
 from pyadc.models.camera import Camera, LiveVideoSource
+from pyadc.websocket.messages import MonitorEventWSMessage
 
 if TYPE_CHECKING:
     from pyadc import AlarmBridge
 
 log = logging.getLogger(__name__)
+
+# Object-detection flags are momentary: a camera reports a single "detected"
+# event with no matching "cleared" follow-up, so we drive the flag True then
+# auto-restore it to False after this delay (matches the 30s motion window used
+# by SensorController for MotionDetected).
+_DETECTION_CLEAR_DELAY_S = 30
+
+# Camera model attribute set by each detected object class.
+_ATTR_PERSON = "person_detected"
+_ATTR_VEHICLE = "vehicle_detected"
+_ATTR_ANIMAL = "animal_detected"
+
+# VideoCameraTriggered (71) carries `cnff` — a comma-separated list of detected
+# ClassificationCategoryTypeEnum *names* (e.g. "Human,Animal,Vehicle").  Map the
+# person/vehicle/animal-family names (lower-cased) to the model attribute.
+# Source: ClassificationCategoryTypeEnum.cs +
+#   UnitEventVideoKeys.CustomerNotificationFiltersCategories = "cnff".
+_CNFF_NAME_TO_ATTR: dict[str, str] = {
+    "human": _ATTR_PERSON,
+    "familiarface": _ATTR_PERSON,
+    "unknownface": _ATTR_PERSON,
+    "vehicle": _ATTR_VEHICLE,
+    "familiarvehicle": _ATTR_VEHICLE,
+    "deliveryvehicle": _ATTR_VEHICLE,
+    "animal": _ATTR_ANIMAL,
+}
+
+# VideoAnalyticsDetection (210) carries `category=<int>` — a single
+# ClassificationCategoryTypeEnum value.  Map the person/vehicle/animal-family
+# integer values to the model attribute.  Source: ClassificationCategoryTypeEnum.cs
+#   Human=0, Vehicle=1, Animal=101, DeliveryVehicle=102, FamiliarVehicle=103,
+#   FamiliarFace=104, UnknownFace=105.
+_CATEGORY_INT_TO_ATTR: dict[int, str] = {
+    0: _ATTR_PERSON,    # Human
+    104: _ATTR_PERSON,  # FamiliarFace
+    105: _ATTR_PERSON,  # UnknownFace
+    1: _ATTR_VEHICLE,   # Vehicle
+    102: _ATTR_VEHICLE,  # DeliveryVehicle
+    103: _ATTR_VEHICLE,  # FamiliarVehicle
+    101: _ATTR_ANIMAL,  # Animal
+}
 
 
 class CameraController(BaseController):
@@ -27,6 +71,119 @@ class CameraController(BaseController):
     resource_type = ResourceType.CAMERA
     model_class = Camera
     _event_state_map = {}  # Cameras don't have simple state transitions
+
+    def __init__(self, bridge: "AlarmBridge") -> None:
+        super().__init__(bridge)
+        # Pending auto-clear timers for momentary detection flags,
+        # keyed by "{resource_id}:{attr}".
+        self._clear_handles: dict[str, asyncio.TimerHandle] = {}
+
+    def _handle_monitor_event(
+        self,
+        msg: MonitorEventWSMessage,
+        event_type: ResourceEventType | str | int,
+    ) -> None:
+        """Route camera video-analytics events to object-detection flags.
+
+        Handles the two confirmed detection events:
+
+        * ``VideoCameraTriggered`` (71) — reads the ``cnff`` classified-object
+          list from the extra-data query string.
+        * ``VideoAnalyticsDetection`` (210) — reads the single ``category``
+          integer from the extra-data query string.
+
+        All other camera events (including ``VideoAnalyticsRuleTurnedOff`` /
+        ``VideoAnalyticsRuleResumedAutomatically``, which are rule-config state
+        changes, not detections) fall through to the base handler.
+        """
+        camera: Camera | None = self._get_device_by_ws_id(msg.device_id)
+        if camera is None:
+            super()._handle_monitor_event(msg, event_type)
+            return
+
+        attrs: set[str] = set()
+        if event_type == ResourceEventType.VIDEO_CAMERA_TRIGGERED:
+            attrs = self._attrs_from_cnff(msg.qstring)
+        elif event_type == ResourceEventType.VIDEO_ANALYTICS_DETECTION:
+            attrs = self._attrs_from_category(msg.qstring)
+
+        if not attrs:
+            super()._handle_monitor_event(msg, event_type)
+            return
+
+        for attr in attrs:
+            self._trigger_detection(camera, attr)
+
+    @staticmethod
+    def _attrs_from_cnff(qstring: str) -> set[str]:
+        """Parse the ``cnff`` classified-object list into model attribute names."""
+        if not qstring:
+            return set()
+        values = parse_qs(qstring).get("cnff", [])
+        attrs: set[str] = set()
+        for value in values:
+            for name in value.split(","):
+                attr = _CNFF_NAME_TO_ATTR.get(name.strip().lower())
+                if attr is not None:
+                    attrs.add(attr)
+        return attrs
+
+    @staticmethod
+    def _attrs_from_category(qstring: str) -> set[str]:
+        """Parse the ``category`` integer into a model attribute name."""
+        if not qstring:
+            return set()
+        values = parse_qs(qstring).get("category", [])
+        attrs: set[str] = set()
+        for value in values:
+            try:
+                category = int(float(value))
+            except (TypeError, ValueError):
+                continue
+            attr = _CATEGORY_INT_TO_ATTR.get(category)
+            if attr is not None:
+                attrs.add(attr)
+        return attrs
+
+    def _trigger_detection(self, camera: Camera, attr: str) -> None:
+        """Drive a detection flag True, notify subscribers, and (re)arm auto-clear."""
+        key = f"{camera.resource_id}:{attr}"
+        # A repeat detection supersedes the pending clear — reset the timer.
+        handle = self._clear_handles.pop(key, None)
+        if handle is not None:
+            handle.cancel()
+
+        already_on = getattr(camera, attr, False)
+        setattr(camera, attr, True)
+        if not already_on:
+            self._bridge.event_broker.publish(
+                ResourceEventMessage(
+                    device_id=camera.resource_id,
+                    device_type=self.resource_type,
+                )
+            )
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no loop (e.g. unit test) — leave the flag set
+        self._clear_handles[key] = loop.call_later(
+            _DETECTION_CLEAR_DELAY_S, self._clear_detection, camera.resource_id, attr
+        )
+
+    def _clear_detection(self, resource_id: str, attr: str) -> None:
+        """Restore a detection flag to False after the momentary window elapses."""
+        self._clear_handles.pop(f"{resource_id}:{attr}", None)
+        camera: Camera | None = self._get_device_by_ws_id(resource_id)
+        if camera is None or not getattr(camera, attr, False):
+            return
+        setattr(camera, attr, False)
+        self._bridge.event_broker.publish(
+            ResourceEventMessage(
+                device_id=camera.resource_id,
+                device_type=self.resource_type,
+            )
+        )
 
     async def get_snapshot_url(self, camera: Camera) -> str | None:
         """Fetch a signed snapshot URL for *camera*.

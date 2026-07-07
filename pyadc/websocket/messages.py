@@ -131,6 +131,10 @@ class MonitorEventWSMessage(BaseWSMessage):
     event_type: str = ""
     event_value: float = 0.0
     device_type: str = ""
+    # Raw `QstringForExtraData` payload (an URL-encoded query string carrying
+    # per-event metadata, e.g. camera video-analytics `cnff`/`category`/bounding
+    # box). Empty for events that don't include extra data.
+    qstring: str = ""
 
 
 @dataclass(kw_only=True)
@@ -178,6 +182,7 @@ class WebSocketMessageParser:
                 event_type=raw.get("EventType", ""),
                 event_value=raw.get("EventValue", 0.0),
                 device_type=raw.get("DeviceType", ""),
+                qstring=raw.get("QstringForExtraData", "") or "",
             )
         if "Property" in raw and "PropertyValue" in raw:
             return PropertyChangeWSMessage(

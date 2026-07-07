@@ -11,6 +11,7 @@ __all__ = [
     "ServiceUnavailable",
     "UnexpectedResponse",
     "NotAuthorized",
+    "RequestBlocked",
     "UnknownDevice",
     "UnsupportedOperation",
     "NotInitialized",
@@ -82,6 +83,16 @@ class UnexpectedResponse(PyadcException):
 
 class NotAuthorized(PyadcException):
     """The authenticated user does not have permission to perform this action (HTTP 403)."""
+
+
+class RequestBlocked(PyadcException):
+    """A request was refused by the client's own safety policy before being sent.
+
+    Raised when a request would target a host outside the Alarm.com domain or a
+    path outside the approved customer JSON:API namespaces (see plan.md Part 3).
+    Deliberately **not** a subclass of :class:`NotAuthorized` so the automatic
+    re-login/retry path never attempts to "recover" from a policy refusal.
+    """
 
 
 # --- Device ---

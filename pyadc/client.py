@@ -13,6 +13,7 @@ __all__ = [
 
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -20,12 +21,32 @@ from pyadc.const import URL_BASE
 from pyadc.exceptions import (
     AuthenticationFailed,
     NotAuthorized,
+    RequestBlocked,
     ServiceUnavailable,
     SessionExpired,
     UnexpectedResponse,
 )
 
 log = logging.getLogger(__name__)
+
+# Customer JSON:API namespaces this client is permitted to call. Requests to any
+# other first path segment under ``/web/api/`` — or to dealer/admin/central-
+# station surfaces — are refused before they are sent. Defense in depth: the
+# fixed ``/web/api/`` base already scopes to the customer API, but this stops a
+# stray or malicious relative path from reaching somewhere it shouldn't.
+# See plan.md Part 3 (safe-API policy).
+_ALLOWED_API_NAMESPACES = frozenset(
+    {
+        "devices",       # partitions, sensors, locks, lights, thermostats, covers, valves, ...
+        "video",         # cameras, snapshots, liveVideoSources, smrfImages
+        "imageSensor",   # imageSensor/imageSensors device endpoints (peek-in)
+        "systems",       # systems/systems
+        "websockets",    # realtime token
+        "identities",    # login identity / session properties
+        "profile",       # profile/profile
+        "engines",       # engines/twoFactorAuthentication/...
+    }
+)
 
 _STATIC_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -64,13 +85,32 @@ class AdcClient:
         self._session = session
         self._afg_token: str = ""
         self._mfa_cookie: str = ""  # twoFactorAuthenticationId — injected into every request
+        self._base_url: str = base_url.rstrip("/")
         self._api_url_base: str = f"{base_url}/web/api/"
         self._referrer: str = f"{base_url}/web/system/home"
+
+        # Host allowlist: only ever send our authenticated session cookies to the
+        # configured Alarm.com host and its subdomains (snapshots and relays live
+        # on ``*.alarm.com``). Prevents a tampered API response from redirecting
+        # credentialed requests to an attacker-controlled host. See plan.md Part 3.
+        base_host = (urlparse(base_url).hostname or "").lower()
+        self._base_host: str = base_host
+        parts = base_host.split(".")
+        self._root_domain: str = ".".join(parts[-2:]) if len(parts) >= 2 else base_host
 
     @property
     def session(self) -> aiohttp.ClientSession:
         """The underlying aiohttp session (needed by JanusSession)."""
         return self._session
+
+    @property
+    def base_url(self) -> str:
+        """Root deployment URL (e.g. ``https://www.alarm.com``), no trailing slash.
+
+        Used to resolve relative, authenticated resource paths (such as image
+        viewer URLs) into absolute URLs for :meth:`fetch_bytes`.
+        """
+        return self._base_url
 
     def _build_headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         """Build the full set of request headers.
@@ -116,6 +156,45 @@ class AdcClient:
         """Return the MFA cookie dict to inject, or None if not set."""
         return {"twoFactorAuthenticationId": self._mfa_cookie} if self._mfa_cookie else None
 
+    def _host_allowed(self, host: str) -> bool:
+        """True if *host* is the configured Alarm.com host or a subdomain of it."""
+        host = (host or "").lower()
+        if not host:
+            return False
+        return (
+            host == self._base_host
+            or host == self._root_domain
+            or host.endswith("." + self._root_domain)
+        )
+
+    def _guard_request(self, url: str, path: str, effective_base: str) -> None:
+        """Enforce the client's safety policy before a request leaves the process.
+
+        1. The target host must be Alarm.com (or a subdomain) — never leak
+           session cookies to a foreign host.
+        2. When calling the default customer API base with a relative path, the
+           path must live in an approved customer namespace and must not attempt
+           path traversal.
+
+        Raises:
+            RequestBlocked: if either rule is violated. Not a ``NotAuthorized``
+            subclass, so the re-login/retry path will not try to recover.
+        """
+        host = urlparse(url).hostname or ""
+        if not self._host_allowed(host):
+            raise RequestBlocked(f"Refusing request to non-Alarm.com host {host!r}")
+
+        # Namespace check only applies to relative paths on the customer API base.
+        if path.startswith("http") or effective_base != self._api_url_base:
+            return
+        if path.startswith("/") or path.startswith("\\") or ".." in path:
+            raise RequestBlocked(f"Refusing unsafe API path {path!r}")
+        first_segment = path.split("?", 1)[0].split("/", 1)[0]
+        if first_segment not in _ALLOWED_API_NAMESPACES:
+            raise RequestBlocked(
+                f"Refusing non-customer API namespace {first_segment!r} (path={path!r})"
+            )
+
     async def get(
         self,
         path: str,
@@ -143,6 +222,7 @@ class AdcClient:
         """
         effective_base = base_url if base_url is not None else self._api_url_base
         url = f"{effective_base}{path}" if not path.startswith("http") else path
+        self._guard_request(url, path, effective_base)
         async with self._session.get(url, headers=self._build_headers(extra_headers), cookies=self._mfa_cookies()) as resp:
             self._update_afg_from_response(resp)
             await self._check_response(resp)
@@ -177,6 +257,7 @@ class AdcClient:
         """
         effective_base = base_url if base_url is not None else self._api_url_base
         url = f"{effective_base}{path}" if not path.startswith("http") else path
+        self._guard_request(url, path, effective_base)
         headers = self._build_headers(extra_headers)
         log.debug("POST %s  AFG=%s", url, bool(self._afg_token))
         async with self._session.post(
@@ -215,6 +296,7 @@ class AdcClient:
         """
         effective_base = base_url if base_url is not None else self._api_url_base
         url = f"{effective_base}{path}" if not path.startswith("http") else path
+        self._guard_request(url, path, effective_base)
         headers = self._build_headers(extra_headers)
         log.debug("PUT %s  AFG=%s", url, bool(self._afg_token))
         async with self._session.put(
@@ -249,6 +331,10 @@ class AdcClient:
             ServiceUnavailable: HTTP 5xx.
             UnexpectedResponse: Any other non-200 status.
         """
+        # fetch_bytes only ever receives full URLs returned by the API (e.g. signed
+        # snapshot URLs). Enforce the host allowlist so credentialed reads can't be
+        # redirected off the Alarm.com domain.
+        self._guard_request(url, url, self._api_url_base)
         async with self._session.get(
             url, headers=self._build_headers(), cookies=self._mfa_cookies()
         ) as resp:

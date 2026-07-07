@@ -120,6 +120,13 @@ class ResourceEventType(StrEnum):
     LEAK_DETECTED = "LeakDetected"
     FREEZE_DETECTED = "FreezeDetected"
     TAMPER_DETECTED = "TamperDetected"
+    # Camera video-analytics events (see EventTypeEnum.cs):
+    #   VideoCameraTriggered = 71    — a recorded clip with a classified-object
+    #     list in its extra-data query string (cnff=Human,Animal,Vehicle,…).
+    #   VideoAnalyticsDetection = 210 — a single object-detection alert carrying
+    #     a `category=<ClassificationCategoryTypeEnum>` + bounding box + snapshot.
+    VIDEO_CAMERA_TRIGGERED = "VideoCameraTriggered"
+    VIDEO_ANALYTICS_DETECTION = "VideoAnalyticsDetection"
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +157,8 @@ INT_TO_RESOURCE_EVENT_TYPE: dict[int, "ResourceEventType"] = {
     315: ResourceEventType.LIGHT_TURNED_ON,    # LightTurnedOn = 315
     316: ResourceEventType.LIGHT_TURNED_OFF,   # LightTurnedOff = 316
     317: ResourceEventType.SWITCH_LEVEL_CHANGED,  # SwitchLevelChanged = 317
+    71: ResourceEventType.VIDEO_CAMERA_TRIGGERED,       # VideoCameraTriggered = 71
+    210: ResourceEventType.VIDEO_ANALYTICS_DETECTION,   # VideoAnalyticsDetection = 210
 }
 
 

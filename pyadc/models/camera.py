@@ -80,6 +80,15 @@ class Camera(AdcDeviceResource):
     # Resolved stream info (populated after fetching liveVideoSource)
     live_video_source: LiveVideoSource | None = None
 
+    # Transient object-detection state, driven by video-analytics WebSocket
+    # events (VideoCameraTriggered / VideoAnalyticsDetection).  These are
+    # momentary: the camera controller sets a flag True when an object of that
+    # class is detected and auto-clears it back to False after a short delay.
+    # Not populated from the REST API.
+    person_detected: bool = False
+    vehicle_detected: bool = False
+    animal_detected: bool = False
+
     @classmethod
     def from_json_api(cls, data: dict[str, Any]) -> Self:
         """Parse from a JSON:API resource object."""

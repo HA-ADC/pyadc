@@ -125,9 +125,38 @@ class BaseController:
                 except Exception as err:
                     log.debug("Failed to parse %s device: %s", self.resource_type, err)
             log.debug("Fetched %d %s device(s)", len(new_devices), self.resource_type)
+            # Preserve object identity for devices we already know about: HA
+            # entities hold a reference to their model instance, and the live
+            # WebSocket handlers mutate that same instance. Replacing the dict
+            # wholesale would (a) leave entities pointing at a stale object and
+            # (b) break the link so future WS updates no longer reach the entity.
+            # Instead, copy the freshly-fetched fields into the existing instance
+            # and remember which devices actually changed so we can notify HA.
+            updated_ids: list[str] = []
             async with self._state_lock:
-                self._devices = new_devices
-                self._devices_by_short_id = new_by_short
+                merged: dict[str, Any] = {}
+                merged_by_short: dict[str, Any] = {}
+                for resource_id, new_device in new_devices.items():
+                    existing = self._devices.get(resource_id)
+                    if existing is not None:
+                        if existing.__dict__ != new_device.__dict__:
+                            existing.__dict__.update(new_device.__dict__)
+                            updated_ids.append(resource_id)
+                        merged[resource_id] = existing
+                    else:
+                        merged[resource_id] = new_device
+                    merged_by_short[resource_id.rsplit("-", 1)[-1]] = merged[resource_id]
+                self._devices = merged
+                self._devices_by_short_id = merged_by_short
+            # Publish outside the lock so entities re-render with reconciled state
+            # (used by refresh_all() / the periodic reconcile to self-heal drift).
+            for resource_id in updated_ids:
+                self._bridge.event_broker.publish(
+                    ResourceEventMessage(
+                        device_id=resource_id,
+                        device_type=self.resource_type,
+                    )
+                )
             return list(self._devices.values())
         except Exception as err:
             log.debug("Failed to fetch %s: %s", self.resource_type, err)

@@ -49,6 +49,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, NoReturn
@@ -138,11 +139,24 @@ class WebSocketClient:
         self._tasks: list[asyncio.Task] = []
         self._connection_attempts = 0
         self._ws: aiohttp.ClientWebSocketResponse | None = None
+        self._last_message_at: float | None = None
 
     @property
     def connected(self) -> bool:
         """Return ``True`` when the WebSocket is in the CONNECTED state."""
         return self._state == WebSocketState.CONNECTED
+
+    @property
+    def seconds_since_last_message(self) -> float | None:
+        """Seconds since the last inbound frame, or ``None`` if none yet.
+
+        Lets callers distinguish an active connection (recent traffic) from one
+        that is silent — used as a cheap, network-free health signal so a REST
+        reconcile only runs when the socket looks stalled.
+        """
+        if self._last_message_at is None:
+            return None
+        return time.monotonic() - self._last_message_at
 
     @property
     def state(self) -> WebSocketState:
@@ -232,10 +246,12 @@ class WebSocketClient:
                 self._set_state(WebSocketState.CONNECTING)
                 self._ws = await self._connect()
                 self._connection_attempts = 0
+                self._last_message_at = time.monotonic()
                 self._set_state(WebSocketState.CONNECTED)
 
                 async for msg in self._ws:
                     if msg.type == aiohttp.WSMsgType.TEXT:
+                        self._last_message_at = time.monotonic()
                         try:
                             data = json.loads(msg.data)
                             parsed = WebSocketMessageParser.parse(data)

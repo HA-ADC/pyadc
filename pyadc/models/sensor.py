@@ -24,6 +24,9 @@ class Sensor(AdcDeviceResource):
     # and via PropertyChangeWSMessage (always °F) on updates.
     temperature: float | None = None
     temperature_unit: str = "F"  # "F" or "C"
+    # True when the panel reports this sensor can be bypassed (customer API
+    # ``supportsBypass``). Bypass itself is a partition-level command.
+    supports_bypass: bool = False
 
     def apply_status_flags(self, new_state: int, flag_mask: int) -> None:
         """Apply DeviceStatusFlags bitmask; bit 0 = 0→CLOSED, 1→OPEN."""
@@ -60,5 +63,6 @@ class Sensor(AdcDeviceResource):
             state=_parse_enum(snake_attrs, "state", SensorState, SensorState.UNKNOWN),
             device_type=_parse_enum(snake_attrs, "device_type", DeviceType, DeviceType.CONTACT),
             bypassed=snake_attrs.get("is_bypassed", False),
+            supports_bypass=bool(snake_attrs.get("supports_bypass", False)),
             battery_level_pct=snake_attrs.get("battery_level_null"),
         )
