@@ -33,10 +33,11 @@ _DETECTION_CLEAR_DELAY_S = 30
 _ATTR_PERSON = "person_detected"
 _ATTR_VEHICLE = "vehicle_detected"
 _ATTR_ANIMAL = "animal_detected"
+_ATTR_PACKAGE = "package_detected"
 
 # VideoCameraTriggered (71) carries `cnff` — a comma-separated list of detected
 # ClassificationCategoryTypeEnum *names* (e.g. "Human,Animal,Vehicle").  Map the
-# person/vehicle/animal-family names (lower-cased) to the model attribute.
+# person/vehicle/animal/parcel-family names (lower-cased) to the model attribute.
 # Source: ClassificationCategoryTypeEnum.cs +
 #   UnitEventVideoKeys.CustomerNotificationFiltersCategories = "cnff".
 _CNFF_NAME_TO_ATTR: dict[str, str] = {
@@ -47,13 +48,14 @@ _CNFF_NAME_TO_ATTR: dict[str, str] = {
     "familiarvehicle": _ATTR_VEHICLE,
     "deliveryvehicle": _ATTR_VEHICLE,
     "animal": _ATTR_ANIMAL,
+    "parcel": _ATTR_PACKAGE,
 }
 
 # VideoAnalyticsDetection (210) carries `category=<int>` — a single
-# ClassificationCategoryTypeEnum value.  Map the person/vehicle/animal-family
+# ClassificationCategoryTypeEnum value.  Map the person/vehicle/animal/parcel
 # integer values to the model attribute.  Source: ClassificationCategoryTypeEnum.cs
-#   Human=0, Vehicle=1, Animal=101, DeliveryVehicle=102, FamiliarVehicle=103,
-#   FamiliarFace=104, UnknownFace=105.
+#   Human=0, Vehicle=1, Parcel=4, Animal=101, DeliveryVehicle=102,
+#   FamiliarVehicle=103, FamiliarFace=104, UnknownFace=105.
 _CATEGORY_INT_TO_ATTR: dict[int, str] = {
     0: _ATTR_PERSON,    # Human
     104: _ATTR_PERSON,  # FamiliarFace
@@ -62,6 +64,7 @@ _CATEGORY_INT_TO_ATTR: dict[int, str] = {
     102: _ATTR_VEHICLE,  # DeliveryVehicle
     103: _ATTR_VEHICLE,  # FamiliarVehicle
     101: _ATTR_ANIMAL,  # Animal
+    4: _ATTR_PACKAGE,   # Parcel
 }
 
 

@@ -93,6 +93,7 @@ class Camera(AdcDeviceResource):
     person_detected: bool = False
     vehicle_detected: bool = False
     animal_detected: bool = False
+    package_detected: bool = False
 
     @classmethod
     def from_json_api(cls, data: dict[str, Any]) -> Self:
