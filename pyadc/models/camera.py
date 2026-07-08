@@ -33,6 +33,10 @@ class LiveVideoSource:
     janus_gateway_url: str | None = None
     janus_token: str | None = None
     ice_servers: str | None = None  # JSON-encoded RFC 5766 ICE server list
+    # Whether the camera's stream needs SPS/PPS injected by Janus to stream
+    # over WebRTC.  Passed through as ``add_sps_pps`` on mountpoint create —
+    # the official ADC player forwards this verbatim, never hardcodes it.
+    sps_and_pps_required: bool = False
 
     @classmethod
     def from_json_api(cls, data: dict[str, Any]) -> Self:
@@ -46,6 +50,7 @@ class LiveVideoSource:
             janus_gateway_url=snake.get("janus_gateway_url"),
             janus_token=snake.get("janus_token"),
             ice_servers=snake.get("ice_servers"),
+            sps_and_pps_required=bool(snake.get("sps_and_pps_required", False)),
         )
 
 

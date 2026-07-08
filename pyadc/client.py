@@ -48,6 +48,12 @@ _ALLOWED_API_NAMESPACES = frozenset(
     }
 )
 
+# Alarm.com-operated media/relay domains outside *.alarm.com.  Snapshot URLs
+# (video/snapshots) are signed links served by the ADC video relay on
+# ``*.devicetask.com`` — the same infrastructure that hosts the Janus gateway
+# and TURN servers returned in liveVideoSource responses.
+_ADC_MEDIA_DOMAINS = ("devicetask.com",)
+
 _STATIC_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     # Device endpoints use NJsonApi and return JSON:API format for this Accept value.
@@ -157,14 +163,20 @@ class AdcClient:
         return {"twoFactorAuthenticationId": self._mfa_cookie} if self._mfa_cookie else None
 
     def _host_allowed(self, host: str) -> bool:
-        """True if *host* is the configured Alarm.com host or a subdomain of it."""
+        """True if *host* is the configured Alarm.com host, a subdomain of it,
+        or one of the Alarm.com-operated media relay domains."""
         host = (host or "").lower()
         if not host:
             return False
-        return (
+        if (
             host == self._base_host
             or host == self._root_domain
             or host.endswith("." + self._root_domain)
+        ):
+            return True
+        return any(
+            host == domain or host.endswith("." + domain)
+            for domain in _ADC_MEDIA_DOMAINS
         )
 
     def _guard_request(self, url: str, path: str, effective_base: str) -> None:

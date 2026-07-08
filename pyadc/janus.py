@@ -150,6 +150,10 @@ class _ReconnectableTrack(_MediaStreamTrack):
         # initial pts" and _run_rtp exits permanently.
         self._pts_watermark: int = -1
         self._pts_offset: int = 0
+        # Count of frames pushed into the queue.  Only successfully *decoded*
+        # frames reach feed_from(), so a stalled counter means the Janus-side
+        # decoder is producing nothing — used by the keyframe watchdog.
+        self.frames_fed: int = 0
 
     async def recv(self) -> Any:
         """Return next frame; blocks when empty. Never raises MediaStreamError."""
@@ -183,6 +187,7 @@ class _ReconnectableTrack(_MediaStreamTrack):
                     except asyncio.QueueEmpty:
                         pass
                 self._queue.put_nowait(frame)
+                self.frames_fed += 1
         except (asyncio.CancelledError, Exception):
             pass
 
@@ -205,11 +210,18 @@ class JanusSession:
         token: str,
         proxy_url: str,
         ice_servers: list[dict[str, Any]] | None = None,
+        *,
+        add_sps_pps: bool = False,
+        name: str | None = None,
     ) -> None:
         self._url = gateway_url
         self._token = token
         self._proxy_url = proxy_url
         self._ice_servers_raw = ice_servers or []
+        # Mirror the official ADC player: add_sps_pps comes from the
+        # liveVideoSource's spsAndPpsRequired attribute, name is the camera MAC.
+        self._add_sps_pps = add_sps_pps
+        self._mountpoint_name = name
         self._http_session: aiohttp.ClientSession | None = None  # set in start()
 
         self._ws: aiohttp.ClientWebSocketResponse | None = None
@@ -246,6 +258,20 @@ class JanusSession:
         # Persistent bridge tracks and their feeder tasks (replaced on restart)
         self._reconnectable_tracks: dict[str, "_ReconnectableTrack"] = {}
         self._feeder_tasks: list[asyncio.Task] = []
+        # Keyframe watchdog (worker loop) — survives Janus restarts, cancelled
+        # only in close().  See _aiortc_keyframe_watchdog.
+        self._keyframe_task: asyncio.Task | None = None
+
+        # Restart-storm guards.  A source that immediately and repeatedly emits
+        # Janus "stopped" would otherwise trigger a restart every ~1 s, and two
+        # overlapping restarts corrupt the WebSocket ("Cannot write to closing
+        # transport") and kill the browser PC.  The lock serializes restarts;
+        # the counter gives up after several restarts that never delivered a
+        # single frame (a genuinely dead source, e.g. an HD relay this camera
+        # doesn't support).
+        self._restart_lock = asyncio.Lock()
+        self._frameless_restarts: int = 0
+        self._max_frameless_restarts: int = 4
 
         # Optional callback invoked (on the HA event loop) when the stream
         # has permanently stopped and the session is being torn down.
@@ -315,30 +341,7 @@ class JanusSession:
             "janus": "message",
             "session_id": self._janus_session_id,
             "handle_id": self._handle_id,
-            "body": {
-                "request": "create",
-                "is_private": True,
-                "type": "rtp",
-                "media_uri": self._proxy_url,
-                "media_uri_query": "",
-                "add_sps_pps": True,
-                "is_virtual": False,
-                "streaming_type": "proxy",
-                # Do NOT set timeout_seconds — the ADC native player omits it entirely
-                # and the server default is much higher.  180 s (our original value)
-                # killed the RTSP connection after exactly 3 minutes, producing a
-                # frozen last frame in the browser.
-                "video": True,
-                "videoport": 0,
-                "videopt": 126,
-                "videortpmap": "H264/90000",
-                # profile-level-id: Baseline 3.1 (42e01f) is the most universally
-                # compatible H.264 profile. aiortc 1.9+ enforces strict profile
-                # matching between the relay track and the browser's offered codecs;
-                # High 4.0 (640028) causes "Failed to set remote video description
-                # send parameters" because most browsers only offer Baseline.
-                "videofmtp": "profile-level-id=42e01f;packetization-mode=1",
-            },
+            "body": self._mountpoint_create_body(),
         })
         plugin_data = resp.get("plugindata", {}).get("data", {})
         if plugin_data.get("error"):
@@ -387,6 +390,86 @@ class JanusSession:
         _LOGGER.debug("Browser connection established via aiortc bridge")
 
         return browser_answer_sdp
+
+    async def wait_first_frame(self, timeout: float) -> bool:
+        """HA loop: wait until at least one decoded video frame has bridged.
+
+        Returns True as soon as the video bridge has fed a frame toward the
+        browser, False if *timeout* elapses (or the session is closing) first.
+        Used by the camera layer to detect a dead source and switch streams.
+        """
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            if self._closing:
+                return False
+            bridge = self._reconnectable_tracks.get("video")
+            if bridge is not None and bridge.frames_fed > 0:
+                return True
+            await asyncio.sleep(0.5)
+        bridge = self._reconnectable_tracks.get("video")
+        return bridge is not None and bridge.frames_fed > 0
+
+    async def switch_source(
+        self,
+        proxy_url: str,
+        *,
+        gateway_url: str | None = None,
+        token: str | None = None,
+        add_sps_pps: bool | None = None,
+    ) -> None:
+        """HA loop: swap to a different media source without dropping the browser.
+
+        Updates the Janus connection parameters and replays the whole
+        connect/create/watch/start sequence via ``_restart_janus_stream`` —
+        ``_browser_pc`` stays alive, so the viewer just sees video start once
+        the new mountpoint delivers.  Used to fall back between the HD and SD
+        ADC relay endpoints when one of them never produces decodable video.
+        """
+        self._proxy_url = proxy_url
+        if gateway_url:
+            self._url = gateway_url
+        if token:
+            self._token = token
+        if add_sps_pps is not None:
+            self._add_sps_pps = add_sps_pps
+        self._stop_handled = True  # suppress stop-event handling during teardown
+        # Deliberate endpoint change — give the new source a fresh restart
+        # budget rather than inheriting the failed endpoint's frameless count.
+        self._frameless_restarts = 0
+        async with self._restart_lock:
+            await self._do_restart_janus_stream()
+
+    def _mountpoint_create_body(self) -> dict[str, Any]:
+        """Build the streaming-plugin ``create`` request body.
+
+        Mirrors the official ADC web player (adc_rtcplayer.js) exactly:
+        ``add_sps_pps`` comes from the liveVideoSource's ``spsAndPpsRequired``
+        attribute (hardcoding True stalls the RTSP ingest on cameras that
+        don't need injection), ``name`` is the camera MAC, and no extra keys
+        (``streaming_type``, ``media_uri_query``, ``timeout_seconds``) are
+        sent — the ADC player omits them and the server defaults are correct.
+        """
+        body: dict[str, Any] = {
+            "request": "create",
+            "is_private": True,
+            "type": "rtp",
+            "media_uri": self._proxy_url,
+            "add_sps_pps": self._add_sps_pps,
+            "is_virtual": False,
+            "video": True,
+            "videoport": 0,
+            "videopt": 126,
+            "videortpmap": "H264/90000",
+            # profile-level-id: Baseline 3.1 (42e01f) is the most universally
+            # compatible H.264 profile. aiortc 1.9+ enforces strict profile
+            # matching between the relay track and the browser's offered codecs;
+            # High 4.0 (640028) causes "Failed to set remote video description
+            # send parameters" because most browsers only offer Baseline.
+            "videofmtp": "profile-level-id=42e01f;packetization-mode=1",
+        }
+        if self._mountpoint_name:
+            body["name"] = self._mountpoint_name
+        return body
 
     async def add_ice_candidate(
         self,
@@ -510,6 +593,9 @@ class JanusSession:
 
         # Cancel feeder tasks before closing PCs so they don't race with teardown.
         feeder_tasks, self._feeder_tasks = self._feeder_tasks, []
+        keyframe_task, self._keyframe_task = self._keyframe_task, None
+        if keyframe_task:
+            feeder_tasks.append(keyframe_task)
         if feeder_tasks:
             async def _cancel_feeders() -> None:
                 for task in feeder_tasks:
@@ -590,6 +676,76 @@ class JanusSession:
         self._janus_trickle_queue.clear()
 
         return new_pc.localDescription.sdp
+
+    async def _aiortc_keyframe_watchdog(self) -> None:
+        """Worker-loop: send RTCP PLI to Janus whenever decoded video stalls.
+
+        Some ADC cameras use very long GOPs and only emit an H264 IDR (plus
+        SPS/PPS) when a viewer asks for one.  A real browser does this via
+        RTCP PLI as soon as its decoder can't produce a picture, but aiortc
+        only sends PLI on jitter-buffer overflow — RTP that arrives intact yet
+        references a keyframe we never received is silently discarded by the
+        decoder ("no frame!") forever.  Without this watchdog those cameras
+        deliver P-slices only and the browser never gets a single frame.
+
+        Every tick, compare the video bridge's decoded-frame counter with the
+        previous tick; if it hasn't advanced, fire a PLI at every active video
+        SSRC on the current ``_janus_pc``.  ADC's Janus proxy forwards the PLI
+        upstream and the camera responds with a fresh IDR.  Reads
+        ``self._janus_pc`` each tick so it keeps working across Janus stream
+        restarts; cancelled only in close().
+        """
+        from struct import pack
+
+        from aiortc.rtp import RTCP_PSFB_FIR, RtcpPsfbPacket
+
+        last_fed = 0
+        fir_seq = 0
+        while True:
+            await asyncio.sleep(2.0)
+            bridge = self._reconnectable_tracks.get("video")
+            pc = self._janus_pc
+            if bridge is None or pc is None:
+                continue
+            fed = bridge.frames_fed
+            if fed != last_fed:
+                last_fed = fed
+                continue
+            try:
+                for receiver in pc.getReceivers():
+                    track = receiver.track
+                    if track is None or track.kind != "video":
+                        continue
+                    # aiortc has no public keyframe-request API; use the same
+                    # internals its own jitter buffer path uses.
+                    ssrcs = list(
+                        getattr(receiver, "_RTCRtpReceiver__active_ssrc", {})
+                    )
+                    rtcp_ssrc = getattr(
+                        receiver, "_RTCRtpReceiver__rtcp_ssrc", None
+                    )
+                    for ssrc in ssrcs:
+                        await receiver._send_rtcp_pli(ssrc)
+                        # Some sources ignore PLI but honor FIR (RFC 5104
+                        # Full Intra Request) — send both while stalled.
+                        if rtcp_ssrc is not None:
+                            fir_seq = (fir_seq + 1) % 256
+                            await receiver._send_rtcp(
+                                RtcpPsfbPacket(
+                                    fmt=RTCP_PSFB_FIR,
+                                    ssrc=rtcp_ssrc,
+                                    media_ssrc=ssrc,
+                                    fci=pack("!LB3x", ssrc, fir_seq),
+                                )
+                            )
+                    if ssrcs:
+                        _LOGGER.debug(
+                            "Video stalled (%d frames) — sent PLI+FIR keyframe "
+                            "request to Janus for SSRC(s) %s",
+                            fed, ssrcs,
+                        )
+            except Exception as exc:
+                _LOGGER.debug("Keyframe request failed: %s", exc)
 
     async def _apply_janus_candidate(self, cand_data: dict[str, Any]) -> None:
         """HA loop: forward a Janus trickle candidate to the worker loop."""
@@ -726,6 +882,11 @@ class JanusSession:
                     self._feeder_tasks.append(feeder)
                     track_count += 1
         _LOGGER.debug("Browser PC: relaying %d track(s) from Janus", track_count)
+
+        if self._keyframe_task is None:
+            self._keyframe_task = asyncio.create_task(
+                self._aiortc_keyframe_watchdog(), name="janus-keyframe-watchdog"
+            )
 
         offer = RTCSessionDescription(sdp=browser_offer_sdp, type="offer")
 
@@ -949,6 +1110,39 @@ class JanusSession:
         """
         if self._closing:
             return
+
+        # Give up on a source that keeps dropping without ever delivering a
+        # frame — restarting it forever just storms the gateway.  A video
+        # bridge that has fed frames resets the counter (a legitimate mid-
+        # stream drop should reconnect indefinitely).
+        bridge = self._reconnectable_tracks.get("video")
+        if bridge is not None and bridge.frames_fed > 0:
+            self._frameless_restarts = 0
+        else:
+            self._frameless_restarts += 1
+        if self._frameless_restarts > self._max_frameless_restarts:
+            _LOGGER.warning(
+                "Janus stream stopped %d times without delivering video — "
+                "giving up on this source", self._frameless_restarts,
+            )
+            if self._on_stopped:
+                try:
+                    self._on_stopped()
+                except Exception:
+                    pass
+            await self.close()
+            return
+
+        # Serialize restarts: overlapping teardowns corrupt the shared
+        # WebSocket.  If one is already running, this stop event is redundant.
+        if self._restart_lock.locked():
+            return
+        async with self._restart_lock:
+            await self._do_restart_janus_stream()
+
+    async def _do_restart_janus_stream(self) -> None:
+        if self._closing:
+            return
         _LOGGER.info("Restarting Janus RTSP stream (keeping browser connection alive)")
 
         # ── 1. Tear down Janus-side only (WS + session state) ─────────────
@@ -1019,21 +1213,7 @@ class JanusSession:
                 "janus": "message",
                 "session_id": self._janus_session_id,
                 "handle_id": self._handle_id,
-                "body": {
-                    "request": "create",
-                    "is_private": True,
-                    "type": "rtp",
-                    "media_uri": self._proxy_url,
-                    "media_uri_query": "",
-                    "add_sps_pps": True,
-                    "is_virtual": False,
-                    "streaming_type": "proxy",
-                    "video": True,
-                    "videoport": 0,
-                    "videopt": 126,
-                    "videortpmap": "H264/90000",
-                    "videofmtp": "profile-level-id=42e01f;packetization-mode=1",
-                },
+                "body": self._mountpoint_create_body(),
             })
             plugin_data = resp.get("plugindata", {}).get("data", {})
             if plugin_data.get("error"):
