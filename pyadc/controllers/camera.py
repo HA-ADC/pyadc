@@ -25,9 +25,9 @@ log = logging.getLogger(__name__)
 
 # Object-detection flags are momentary: a camera reports a single "detected"
 # event with no matching "cleared" follow-up, so we drive the flag True then
-# auto-restore it to False after this delay (matches the 30s motion window used
-# by SensorController for MotionDetected).
-_DETECTION_CLEAR_DELAY_S = 30
+# auto-restore it to False after this delay. Repeat detections re-arm the
+# timer, so sustained activity keeps the flag on.
+_DETECTION_CLEAR_DELAY_S = 10
 
 # Camera model attribute set by each detected object class.
 _ATTR_PERSON = "person_detected"

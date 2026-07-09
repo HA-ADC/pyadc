@@ -15,6 +15,10 @@ __all__ = [
     "KEEP_ALIVE_MAX_INTERVAL_S",
     "WS_KEEP_ALIVE_INTERVAL_S",
     "WS_RECEIVE_TIMEOUT_S",
+    "WS_TOKEN_ROTATE_AFTER_S",
+    "WS_TOKEN_ROTATE_RETRY_S",
+    "WS_ROTATION_OVERLAP_S",
+    "WS_DEDUP_TTL_S",
     "MAX_RECONNECT_WAIT_S",
     "MAX_CONNECTION_ATTEMPTS",
     "REQUEST_RETRY_LIMIT",
@@ -61,6 +65,24 @@ KEEP_ALIVE_INTERVAL_S = 240       # Server session timeout is 5 min — ping eve
 KEEP_ALIVE_MAX_INTERVAL_S = 600   # Cap for keep-alive backoff on consecutive failures (10 min)
 WS_KEEP_ALIVE_INTERVAL_S = 60     # aiohttp heartbeat interval (server also pings every 15 s)
 WS_RECEIVE_TIMEOUT_S = 300        # Max silence before receive() times out — matches JWT lifetime
+
+# WebSocket token rotation (make-before-break).  The ADC backend force-closes
+# any socket whose JWT ValidTo has passed (WebSocketDispatcher.PurgeDisconnectedClients,
+# close code 1008) — the JWT lives 300 s (WebsocketAuthTokenTimeout), so every
+# connection dies within ~5 minutes.  Instead of waiting for that close and
+# losing every event fired during the reconnect window, the client opens a
+# replacement socket with a fresh JWT *before* expiry.  The server registers
+# multiple sockets per unit and fans every message out to all of them
+# (WebSocketDispatcher.AddClient / SendQueuedMessagesAsync), so a brief overlap
+# guarantees zero event gap; duplicate frames during the overlap are dropped by
+# a short-TTL dedupe cache.
+WS_TOKEN_ROTATE_AFTER_S = 240     # Swap sockets 60 s before the 300 s JWT ValidTo purge
+WS_TOKEN_ROTATE_RETRY_S = 15      # Retry delay when a rotation connect attempt fails
+WS_ROTATION_OVERLAP_S = 2         # Both sockets stay open this long during handover
+WS_DEDUP_TTL_S = 10               # Identical raw frames within this window are handover dupes
+WS_CONNECT_TIMEOUT_S = 60         # Hard cap on token fetch + handshake — a hung REST call
+                                  # must never wedge the reader (observed: a token fetch
+                                  # stalling ~7 min while the old socket died underneath)
 MAX_RECONNECT_WAIT_S = 30 * 60    # Cap for exponential back-off (30 min)
 MAX_CONNECTION_ATTEMPTS = 25      # After this the WS transitions to DEAD
 REQUEST_RETRY_LIMIT = 3           # REST request retry limit

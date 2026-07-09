@@ -19,8 +19,11 @@ Where possible, use local control for smart home devices that are natively suppo
 - **Async REST client** with AFG anti-forgery token handling
 - **2-task WebSocket client** (reader / processor) for real-time push updates
 - **Full `DeviceStatusUpdate` bitmask handling** — fixes a known gap in community libraries
-- **JWT expiry detection** — close code 1008 triggers automatic re-auth and reconnect
+- **Seamless WebSocket token rotation** — the backend force-closes every socket when its JWT expires, so pyadc opens a replacement connection *before* the old one dies (make-before-break) and dedupes the overlapping frames; no events are lost during handovers
+- **Coverage-gap recovery** — if a socket dies before its replacement connects, a `RECONNECTED` event triggers a full REST state resync
+- **JWT expiry detection** — close code 1008 (failed rotation fallback) triggers automatic re-auth and reconnect
 - **JWT key version rotation** — tries `ver=A` then falls back to `ver=B`
+- **Camera support** — signed snapshot URLs, WebRTC live streaming via ADC's Janus gateway (optional `webrtc` extra), and momentary person / vehicle / animal / package object-detection events
 
 ## Supported Device Types
 
@@ -53,11 +56,19 @@ Where possible, use local control for smart home devices that are natively suppo
 pip install pyadc
 ```
 
-Development install (includes pytest, aioresponses):
+Requires Python 3.12+.
+
+WebRTC live camera streaming needs the optional `webrtc` extra (pulls in `aiortc`; everything else — including snapshots and detection events — works without it):
 
 ```bash
-git clone <repo>
-cd HA_pyADC/pyadc
+pip install "pyadc[webrtc]"
+```
+
+Development install (includes pytest, aioresponses, aiortc):
+
+```bash
+git clone git@github.com:HA-ADC/pyadc.git
+cd pyadc
 pip install -e ".[dev]"
 ```
 
@@ -182,6 +193,32 @@ await bridge.water_valves.open(valve_id)
 await bridge.water_valves.close(valve_id)
 ```
 
+## Cameras
+
+```python
+camera = bridge.cameras.devices[0]
+
+# Short-lived signed URL to a JPEG still frame
+url = await bridge.cameras.get_snapshot_url(camera)
+
+# WebRTC stream info (Janus gateway URL, token, ICE servers).
+# Credentials expire in ~1 hour, so fetch fresh each time.
+source = await bridge.cameras.get_live_video_source(camera, hd=True)
+```
+
+Live streaming end-to-end (bridging Janus's offerer role to a browser client)
+is handled by `pyadc.janus.JanusSession` and requires the `webrtc` extra.
+
+### Object detection
+
+Cameras with video analytics push detection events over the WebSocket
+(`VideoCameraTriggered` / `VideoAnalyticsDetection`). The controller decodes
+them into four momentary flags on the `Camera` model — `person_detected`,
+`vehicle_detected`, `animal_detected`, `package_detected` — each auto-clearing
+10 s after the last detection event (repeat detections re-arm the timer).
+Flag transitions publish `RESOURCE_UPDATED` on the `EventBroker`, so subscribe
+to the camera's `device_id` to react to detections.
+
 ## Manually Refreshing State
 
 Re-fetch all device state from the REST API (e.g. after recovering from an outage):
@@ -202,8 +239,10 @@ pyadc/
 ├── const.py             # All URLs, enums (ArmingState, DeviceStatusFlags, etc.)
 ├── events.py            # EventBroker — pub/sub for device state changes
 ├── exceptions.py        # Exception hierarchy rooted at PyadcException
+├── janus.py             # JanusSession — WebRTC bridge to ADC's Janus gateway (needs `webrtc` extra)
 ├── models/              # Dataclasses for every device type
 │   ├── base.py          # AdcResource, AdcDeviceResource, _parse_enum(), _extract_attrs()
+│   ├── auth.py
 │   ├── partition.py
 │   ├── sensor.py
 │   ├── lock.py
@@ -227,10 +266,11 @@ pyadc/
 │   ├── valve.py
 │   ├── water_sensor.py
 │   ├── water_meter.py   # fetch_all only (no WS events)
-│   ├── image_sensor.py  # peek_in_now
+│   ├── image_sensor.py  # peek_in_now, recent-images cache (panel/PIR cameras)
+│   ├── camera.py        # snapshots, live video sources, detection events
 │   └── system.py
 └── websocket/
-    ├── client.py        # 2-task WS client (reader/processor)
+    ├── client.py        # 2-task WS client (reader/processor), token rotation
     └── messages.py      # WebSocketMessageParser + typed message dataclasses
 ```
 
@@ -248,6 +288,8 @@ AlarmBridge.start_websocket()
 EventBroker.publish()
   └── BaseController._handle_raw_event()
         ├── DeviceStatusUpdateWSMessage → apply_status_flags() → RESOURCE_UPDATED
+        ├── MonitorEventWSMessage → _handle_monitor_event() → RESOURCE_UPDATED
+        │     (CameraController overrides this to decode detection events)
         ├── EventWSMessage → _event_state_map lookup → update device.state → RESOURCE_UPDATED
         └── PropertyChangeWSMessage → _handle_property_change() → RESOURCE_UPDATED
 ```
@@ -318,7 +360,7 @@ Use [semver](https://semver.org/):
 ### 2. Run the test suite
 
 ```bash
-cd HA_pyADC/pyadc
+cd pyadc
 pytest tests/ -v
 ```
 
@@ -351,12 +393,10 @@ git push origin main
 
 ### 5. Dev environment note
 
-The devcontainer has **no outbound internet access**, so HA cannot install from the git URL. For local development keep `manifest.json` set to just `"pyadc"` (no URL) and install pyadc from source:
+The devcontainer has **no outbound internet access**, so HA cannot install from the git URL. For local development use `deploy.sh` from the workspace root — it locates the running HA devcontainer, copies the pyadc source and the custom component in, and restarts HA:
 
 ```bash
-docker cp pyadc/. hungry_fermat:/tmp/pyadc/
-docker exec hungry_fermat bash -c \
-  "cp -r /tmp/pyadc/pyadc/* /home/vscode/.local/ha-venv/lib/python3.14/site-packages/pyadc/"
+./deploy.sh
 ```
 
 The committed `manifest.json` always uses the full git URL — only strip it in the container.
@@ -366,7 +406,7 @@ The committed `manifest.json` always uses the full git URL — only strip it in 
 ## Running Tests
 
 ```bash
-cd HA_pyADC/pyadc
+cd pyadc
 pip install -e ".[dev]"
 pytest tests/ -v
 ```

@@ -37,9 +37,9 @@ from pyadc.controllers.thermostat import ThermostatController
 from pyadc.controllers.valve import ValveController
 from pyadc.controllers.water_meter import WaterMeterController
 from pyadc.controllers.water_sensor import WaterSensorController
-from pyadc.events import EventBroker
+from pyadc.events import EventBroker, EventBrokerMessage, EventBrokerTopic
 from pyadc.exceptions import NotInitialized
-from pyadc.websocket.client import WebSocketClient
+from pyadc.websocket.client import ConnectionEvent, WebSocketClient, WebSocketState
 
 log = logging.getLogger(__name__)
 
@@ -172,6 +172,14 @@ class AlarmBridge:
         )
         self.websocket = WebSocketClient(self)
 
+        # After a WebSocket coverage gap (socket down before a replacement was
+        # connected), events may have been missed — resync once via REST.
+        self._gap_refresh_task: asyncio.Task | None = None
+        self.event_broker.subscribe(
+            [EventBrokerTopic.CONNECTION_EVENT],
+            self._handle_connection_event,
+        )
+
         # Device controllers (instantiated from registry)
         for attr_name, controller_cls in self._CONTROLLER_REGISTRY:
             setattr(self, attr_name, controller_cls(self))
@@ -227,6 +235,8 @@ class AlarmBridge:
 
     async def stop(self) -> None:
         """Stop the WebSocket client and the session keep-alive task."""
+        if self._gap_refresh_task is not None and not self._gap_refresh_task.done():
+            self._gap_refresh_task.cancel()
         await self.websocket.stop()
         await self.auth.stop_keep_alive()
 
@@ -237,6 +247,30 @@ class AlarmBridge:
         state gaps that occurred while the connection was down.
         """
         await self._fetch_all_devices()
+
+    def _handle_connection_event(self, message: EventBrokerMessage) -> None:
+        """Resync state after a reconnect that followed a coverage gap.
+
+        The WebSocket client publishes ``RECONNECTED`` only when the previous
+        socket died *before* a replacement was connected (seamless token
+        rotations publish nothing), so this fires exclusively when events may
+        actually have been missed — it is event-driven reconciliation, not
+        polling.
+        """
+        if (
+            isinstance(message, ConnectionEvent)
+            and message.current_state is WebSocketState.RECONNECTED
+            and self._initialized
+            and (self._gap_refresh_task is None or self._gap_refresh_task.done())
+        ):
+            self._gap_refresh_task = asyncio.create_task(self._refresh_after_gap())
+
+    async def _refresh_after_gap(self) -> None:
+        try:
+            await self.refresh_all()
+            log.info("Device state resynced after WebSocket coverage gap")
+        except Exception as err:
+            log.warning("Post-reconnect state resync failed: %s", err)
 
     # --- Convenience pass-through action methods ---
     # These delegate to the relevant controller so callers don't need to

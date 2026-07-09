@@ -2,8 +2,9 @@
 
 Implements a 2-task architecture:
 
-* **Reader task** — owns the WebSocket connection, handles reconnection with
-  exponential back-off, and enqueues parsed messages.
+* **Reader task** — owns the WebSocket connection(s), handles proactive token
+  rotation and reconnection with exponential back-off, and enqueues parsed
+  messages.
 * **Processor task** — dequeues messages and dispatches them to the
   :class:`~pyadc.events.EventBroker`.
 
@@ -20,6 +21,29 @@ to the JWT automatically — so the client does **not** add a separate
 ``ver=`` parameter.  JWT lifetime is **300 seconds** (configured server-side
 via ``WebsocketAuthTokenTimeout``).
 
+**Token rotation (make-before-break).**  The JWT is validated only at the
+handshake, but the backend's purge loop force-closes any socket whose
+``ValidTo`` has passed (``WebSocketDispatcher.PurgeDisconnectedClients``,
+close code 1008).  A close-then-reconnect cycle therefore used to occur every
+~5 minutes, and any event dispatched during the reconnect window was lost —
+e.g. a garage door completing its ``opening → open`` transition would leave
+HA stuck on "opening" forever (GitHub issue alarmdotcom-ha#2).  To eliminate
+the gap, the reader opens a **replacement socket with a fresh JWT before the
+old one expires** (at ``WS_TOKEN_ROTATE_AFTER_S``).  The backend registers
+multiple sockets per unit and fans every message out to all of them
+(``WebSocketDispatcher.AddClient`` / ``SendQueuedMessagesAsync``), so both
+sockets receive all traffic during a brief overlap and no event can fall
+between them.  Identical raw frames received on both sockets during the
+overlap are dropped by a short-TTL dedupe cache.
+
+**Coverage gaps.**  If the connection ever drops *before* a replacement is
+connected (network blip, backend restart, failed rotation), events may have
+been missed.  After the subsequent successful reconnect the client publishes
+a :class:`ConnectionEvent` with :attr:`WebSocketState.RECONNECTED` (in
+addition to the regular ``CONNECTED`` state change) so consumers — e.g.
+:class:`~pyadc.AlarmBridge` — can run a one-shot REST resync.  Rotation
+handovers are seamless and publish nothing.
+
 .. note:: **Security constraint** — the ADC backend reads the JWT
     exclusively from ``Request.QueryString["auth"]``
     (``AlarmClientWebSocketService.cs:173``).  There is no
@@ -31,10 +55,10 @@ via ``WebsocketAuthTokenTimeout``).
 
 The ``?f=1`` flag instructs the ADC server to send an immediate close-frame
 (code 1008) when the JWT is invalid or expired, rather than silently
-hanging.  On close code 1008 the reader task reconnects immediately;
-:meth:`~pyadc.websocket.client.WebSocketClient._connect` fetches a fresh JWT
-on every attempt.  A full re-login is only triggered if the JWT fetch itself
-fails (i.e. the HTTP session has also expired).
+hanging.  With rotation in place a 1008 close should only be seen if a
+rotation failed repeatedly; the reader then reconnects with a fresh JWT.
+A full re-login is only triggered if the JWT fetch itself fails (i.e. the
+HTTP session has also expired).
 """
 
 from __future__ import annotations
@@ -59,8 +83,13 @@ import aiohttp
 from pyadc.const import (
     MAX_CONNECTION_ATTEMPTS,
     MAX_RECONNECT_WAIT_S,
+    WS_CONNECT_TIMEOUT_S,
+    WS_DEDUP_TTL_S,
     WS_KEEP_ALIVE_INTERVAL_S,
     WS_RECEIVE_TIMEOUT_S,
+    WS_ROTATION_OVERLAP_S,
+    WS_TOKEN_ROTATE_AFTER_S,
+    WS_TOKEN_ROTATE_RETRY_S,
 )
 from pyadc.exceptions import AuthenticationFailed, NotAuthorized
 from pyadc.events import EventBrokerMessage, EventBrokerTopic
@@ -84,8 +113,13 @@ class WebSocketState(Enum):
     State transitions:
     ``DISCONNECTED`` → ``CONNECTING`` → ``CONNECTED`` → ``WAITING`` → …
     After ``MAX_CONNECTION_ATTEMPTS`` failures: → ``DEAD`` (terminal).
-    A ``RECONNECTED`` state may be published after a successful
-    reconnect following a ``WAITING`` state.
+
+    ``RECONNECTED`` is not a resting state: it is published as an *extra*
+    :class:`ConnectionEvent` immediately after a ``CONNECTED`` transition
+    that followed a coverage gap (the socket was down for some interval, so
+    events may have been missed).  Consumers should treat it as a signal to
+    resync state via REST.  Seamless token-rotation handovers never publish
+    it.
     """
 
     CONNECTED = "connected"
@@ -111,13 +145,18 @@ class WebSocketClient:
     **Task architecture:**
 
     1. ``ws_reader`` (:meth:`_reader_task`) — establishes the WebSocket
-       connection, reads raw text frames, parses them with
-       :class:`~pyadc.websocket.messages.WebSocketMessageParser`, and puts
-       the resulting :class:`~pyadc.websocket.messages.BaseWSMessage` objects
-       onto the internal queue.  Handles reconnection with exponential
-       back-off.  On close code 1008 (JWT expiry), reconnects immediately;
-       a full re-login only occurs if the JWT fetch fails due to an expired
-       HTTP session.
+       connection, spawns a frame-reading subtask per socket
+       (:meth:`_read_frames`), and manages the connection lifecycle:
+
+       * **Token rotation** — ``WS_TOKEN_ROTATE_AFTER_S`` after each JWT
+         fetch, a replacement socket is opened with a fresh token while the
+         old socket is still live.  The two overlap briefly (the backend
+         fans messages out to both), then the old socket is closed.  No gap,
+         no events published, state stays ``CONNECTED``.
+       * **Reconnection** — if a socket closes before a replacement is up,
+         the reader reconnects with exponential back-off and, on success,
+         publishes ``RECONNECTED`` so consumers can resync missed state.
+
     2. ``ws_processor`` (:meth:`_processor_task`) — dequeues messages and
        publishes them through the :class:`~pyadc.events.EventBroker` so that
        device controllers and HA entities receive state updates.
@@ -139,7 +178,12 @@ class WebSocketClient:
         self._tasks: list[asyncio.Task] = []
         self._connection_attempts = 0
         self._ws: aiohttp.ClientWebSocketResponse | None = None
+        self._old_ws: aiohttp.ClientWebSocketResponse | None = None
         self._last_message_at: float | None = None
+        self._token_fetched_at: float = 0.0
+        self._had_gap = False
+        # raw frame text → monotonic time first seen; drops handover duplicates
+        self._recent_frames: dict[str, float] = {}
 
     @property
     def connected(self) -> bool:
@@ -148,11 +192,13 @@ class WebSocketClient:
 
     @property
     def seconds_since_last_message(self) -> float | None:
-        """Seconds since the last inbound frame, or ``None`` if none yet.
+        """Seconds since the last inbound frame or successful (re)connect.
 
         Lets callers distinguish an active connection (recent traffic) from one
         that is silent — used as a cheap, network-free health signal so a REST
-        reconcile only runs when the socket looks stalled.
+        reconcile only runs when the socket looks stalled.  A successful token
+        rotation also refreshes this timestamp, since completing a fresh
+        token fetch + handshake proves the path is alive end-to-end.
         """
         if self._last_message_at is None:
             return None
@@ -187,13 +233,15 @@ class WebSocketClient:
             t.add_done_callback(_on_task_done)
 
     async def stop(self) -> None:
-        """Cancel all tasks and close the WebSocket connection."""
+        """Cancel all tasks and close the WebSocket connection(s)."""
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
+        for ws in (self._ws, self._old_ws):
+            if ws and not ws.closed:
+                await ws.close()
+        self._old_ws = None
         self._set_state(WebSocketState.DISCONNECTED)
 
     async def _connect(self) -> aiohttp.ClientWebSocketResponse:
@@ -210,7 +258,18 @@ class WebSocketClient:
         ``heartbeat`` delegates ping/pong to aiohttp; ``receive_timeout``
         is set to match the JWT lifetime so a fully silent connection is
         detected within one token window.
+
+        The whole attempt (token fetch, optional re-login, handshake) is
+        capped at ``WS_CONNECT_TIMEOUT_S``: a stalled REST call here would
+        otherwise wedge the reader task indefinitely — during a rotation the
+        old socket would silently die underneath it, and during a reconnect
+        recovery would be delayed by however long the stall lasts.
         """
+        async with asyncio.timeout(WS_CONNECT_TIMEOUT_S):
+            return await self._connect_inner()
+
+    async def _connect_inner(self) -> aiohttp.ClientWebSocketResponse:
+        log.debug("WS connect: fetching token...")
         try:
             endpoint, token = await self._bridge.auth.get_websocket_token()
         except (AuthenticationFailed, NotAuthorized):
@@ -218,6 +277,11 @@ class WebSocketClient:
             await self._bridge.auth.login()
             await self._bridge.auth.start_keep_alive()
             endpoint, token = await self._bridge.auth.get_websocket_token()
+
+        # The rotation deadline is measured from token *issuance*, not from
+        # when the handshake completes, so a slow connect can't eat into the
+        # safety margin before the server-side ValidTo purge.
+        self._token_fetched_at = time.monotonic()
 
         # SECURITY NOTE: The ADC backend reads the JWT exclusively from the URL
         # query string (AlarmClientWebSocketService.cs, line 173:
@@ -240,70 +304,187 @@ class WebSocketClient:
             raise ConnectionError(f"WebSocket connection failed: {err}") from err
 
     async def _reader_task(self) -> NoReturn:
-        """Maintain WS connection and enqueue parsed messages."""
-        while True:
-            try:
-                self._set_state(WebSocketState.CONNECTING)
-                self._ws = await self._connect()
+        """Maintain WS coverage: rotate tokens seamlessly, reconnect on drops."""
+        read_task: asyncio.Task | None = None
+        old_read_task: asyncio.Task | None = None
+        try:
+            while True:
+                # ---- (re)connect with exponential back-off -----------------
+                try:
+                    self._set_state(WebSocketState.CONNECTING)
+                    self._ws = await self._connect()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as err:
+                    log.warning("WS connection error: %s", err)
+                    if not await self._backoff():
+                        return
+                    continue
+
                 self._connection_attempts = 0
                 self._last_message_at = time.monotonic()
                 self._set_state(WebSocketState.CONNECTED)
+                if self._had_gap:
+                    # The previous socket died before a replacement was up —
+                    # events may have been missed. Signal consumers to resync.
+                    self._had_gap = False
+                    self._bridge.event_broker.publish(
+                        ConnectionEvent(current_state=WebSocketState.RECONNECTED)
+                    )
 
-                async for msg in self._ws:
-                    if msg.type == aiohttp.WSMsgType.TEXT:
-                        self._last_message_at = time.monotonic()
-                        try:
-                            data = json.loads(msg.data)
-                            parsed = WebSocketMessageParser.parse(data)
-                            await self._queue.put(parsed)
-                        except Exception as err:
-                            log.debug("Failed to parse WS message: %s | raw: %s", err, msg.data)
-
-                    elif msg.type == aiohttp.WSMsgType.CLOSE:
-                        close_code = msg.data
-                        if close_code == WS_CLOSE_POLICY_VIOLATION:
-                            log.info(
-                                "WS JWT expired (1008) — reconnecting with fresh token"
-                                " (full re-auth only if HTTP session is also dead)"
-                            )
-                        else:
-                            log.debug("WS closed with code %s", close_code)
-                        break
-
-                    elif msg.type == aiohttp.WSMsgType.ERROR:
-                        log.error("WS error: %s", self._ws.exception())
-                        break
-
-            except asyncio.CancelledError:
-                raise
-            except Exception as err:
-                log.warning("WS connection error: %s", err)
-
-            # Backoff before reconnecting
-            self._connection_attempts += 1
-            if self._connection_attempts >= MAX_CONNECTION_ATTEMPTS:
-                self._set_state(WebSocketState.DEAD)
-                log.error("WebSocket DEAD after %d attempts", self._connection_attempts)
-                return
-
-            wait_s = min(
-                (2**self._connection_attempts) + random.uniform(0, min(2**self._connection_attempts, 30)),
-                MAX_RECONNECT_WAIT_S,
-            )
-            log.info(
-                "WS reconnecting in %.1fs (attempt %d/%d)",
-                wait_s,
-                self._connection_attempts,
-                MAX_CONNECTION_ATTEMPTS,
-            )
-            self._set_state(WebSocketState.WAITING)
-            self._bridge.event_broker.publish(
-                ConnectionEvent(
-                    current_state=WebSocketState.WAITING,
-                    next_attempt_s=int(wait_s),
+                read_task = asyncio.create_task(
+                    self._read_frames(self._ws), name="ws_read_frames"
                 )
+                rotate_deadline = self._token_fetched_at + WS_TOKEN_ROTATE_AFTER_S
+
+                # ---- rotation loop: swap sockets before the JWT purge ------
+                while True:
+                    timeout = max(rotate_deadline - time.monotonic(), 0.0)
+                    done, _ = await asyncio.wait({read_task}, timeout=timeout)
+                    if read_task in done:
+                        break  # socket closed → coverage gap begins
+
+                    # Rotation due: open the replacement while the old socket
+                    # is still registered server-side (the dispatcher fans
+                    # messages out to every open socket for this unit).
+                    log.debug("WS token rotation due — opening replacement socket")
+                    try:
+                        new_ws = await self._connect()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as err:
+                        log.debug(
+                            "WS rotation connect failed (%s) — retrying in %ss; "
+                            "old socket stays up meanwhile",
+                            err,
+                            WS_TOKEN_ROTATE_RETRY_S,
+                        )
+                        rotate_deadline = time.monotonic() + WS_TOKEN_ROTATE_RETRY_S
+                        continue
+
+                    self._old_ws, old_read_task = self._ws, read_task
+                    self._ws = new_ws
+                    # A completed token fetch + handshake proves end-to-end
+                    # liveness; refresh the staleness signal accordingly.
+                    self._last_message_at = time.monotonic()
+                    read_task = asyncio.create_task(
+                        self._read_frames(new_ws), name="ws_read_frames"
+                    )
+                    rotate_deadline = self._token_fetched_at + WS_TOKEN_ROTATE_AFTER_S
+                    log.debug(
+                        "WS token rotation: replacement connected, closing old "
+                        "socket after %ss overlap",
+                        WS_ROTATION_OVERLAP_S,
+                    )
+
+                    # Brief overlap so a message in flight to the old socket
+                    # is still read, then a graceful close.
+                    await asyncio.wait({old_read_task}, timeout=WS_ROTATION_OVERLAP_S)
+                    if not self._old_ws.closed:
+                        await self._old_ws.close()
+                    await asyncio.wait({old_read_task}, timeout=5)
+                    if not old_read_task.done():
+                        old_read_task.cancel()
+                    old_read_task = None
+                    self._old_ws = None
+
+                # Unexpected close (JWT purge after failed rotations, network
+                # drop, backend restart, …) — anything until reconnect is a gap.
+                self._had_gap = True
+                read_task = None
+                if not await self._backoff():
+                    return
+        finally:
+            for t in (read_task, old_read_task):
+                if t is not None and not t.done():
+                    t.cancel()
+
+    async def _backoff(self) -> bool:
+        """Sleep with exponential back-off; ``False`` once the DEAD cap is hit."""
+        self._connection_attempts += 1
+        if self._connection_attempts >= MAX_CONNECTION_ATTEMPTS:
+            self._set_state(WebSocketState.DEAD)
+            log.error("WebSocket DEAD after %d attempts", self._connection_attempts)
+            return False
+
+        wait_s = min(
+            (2**self._connection_attempts) + random.uniform(0, min(2**self._connection_attempts, 30)),
+            MAX_RECONNECT_WAIT_S,
+        )
+        log.info(
+            "WS reconnecting in %.1fs (attempt %d/%d)",
+            wait_s,
+            self._connection_attempts,
+            MAX_CONNECTION_ATTEMPTS,
+        )
+        self._set_state(WebSocketState.WAITING)
+        self._bridge.event_broker.publish(
+            ConnectionEvent(
+                current_state=WebSocketState.WAITING,
+                next_attempt_s=int(wait_s),
             )
-            await asyncio.sleep(wait_s)
+        )
+        await asyncio.sleep(wait_s)
+        return True
+
+    async def _read_frames(self, ws: aiohttp.ClientWebSocketResponse) -> None:
+        """Read frames from *ws* until it closes; enqueue parsed messages.
+
+        Runs as one task per socket so that two sockets can be drained
+        concurrently during a rotation handover.
+        """
+        try:
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    self._last_message_at = time.monotonic()
+                    if self._is_duplicate_frame(msg.data):
+                        continue
+                    try:
+                        data = json.loads(msg.data)
+                        parsed = WebSocketMessageParser.parse(data)
+                        await self._queue.put(parsed)
+                    except Exception as err:
+                        log.debug("Failed to parse WS message: %s | raw: %s", err, msg.data)
+
+                elif msg.type == aiohttp.WSMsgType.CLOSE:
+                    close_code = msg.data
+                    if close_code == WS_CLOSE_POLICY_VIOLATION:
+                        log.info(
+                            "WS JWT expired (1008) before rotation completed — "
+                            "reconnecting with fresh token"
+                        )
+                    else:
+                        log.debug("WS closed with code %s", close_code)
+                    break
+
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    log.error("WS error: %s", ws.exception())
+                    break
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            log.warning("WS read error: %s", err)
+
+    def _is_duplicate_frame(self, raw: str) -> bool:
+        """True if an identical frame was already seen within ``WS_DEDUP_TTL_S``.
+
+        During a rotation handover both sockets are registered server-side and
+        the dispatcher sends every message to each of them; an identical raw
+        frame inside the TTL window is that handover duplicate, not a new
+        event (real ADC frames carry event dates/correlation data, so distinct
+        events never serialize to identical text).
+        """
+        now = time.monotonic()
+        self._recent_frames = {
+            frame: seen_at
+            for frame, seen_at in self._recent_frames.items()
+            if now - seen_at < WS_DEDUP_TTL_S
+        }
+        if raw in self._recent_frames:
+            return True
+        self._recent_frames[raw] = now
+        return False
 
     async def _processor_task(self) -> NoReturn:
         """Dequeue parsed WS messages and dispatch to EventBroker."""

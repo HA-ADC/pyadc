@@ -39,10 +39,10 @@ async def test_get_builds_full_url(client, mock_response):
 async def test_get_absolute_url_not_prefixed(client, mock_response):
     resp = mock_response(200, {})
     client._session.get = MagicMock(return_value=resp)
-    await client.get("https://custom.example.com/api/test")
+    await client.get("https://media.alarm.com/api/test")
     call_args = client._session.get.call_args
     url = call_args[0][0]
-    assert url == "https://custom.example.com/api/test"
+    assert url == "https://media.alarm.com/api/test"
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +106,7 @@ async def test_afg_header_sent_when_present(client, mock_response):
     client._afg_token = "test-afg-token"
     resp = mock_response(200, {})
     client._session.get = MagicMock(return_value=resp)
-    await client.get("test")
+    await client.get("devices/partition")
     call_kwargs = client._session.get.call_args
     headers = call_kwargs[1].get("headers", {})
     assert "AjaxRequestUniqueKey" in headers
@@ -118,7 +118,7 @@ async def test_afg_header_not_sent_when_empty(client, mock_response):
     client._afg_token = ""
     resp = mock_response(200, {})
     client._session.get = MagicMock(return_value=resp)
-    await client.get("test")
+    await client.get("devices/partition")
     call_kwargs = client._session.get.call_args
     headers = call_kwargs[1].get("headers", {})
     assert "Ajaxrequestuniquekey" not in headers
