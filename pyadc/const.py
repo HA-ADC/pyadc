@@ -19,6 +19,8 @@ __all__ = [
     "WS_TOKEN_ROTATE_RETRY_S",
     "WS_ROTATION_OVERLAP_S",
     "WS_DEDUP_TTL_S",
+    "COVER_TRANSITION_TIMEOUT_S",
+    "COVER_REFRESH_HTTP_TIMEOUT_S",
     "MAX_RECONNECT_WAIT_S",
     "MAX_CONNECTION_ATTEMPTS",
     "REQUEST_RETRY_LIMIT",
@@ -83,6 +85,20 @@ WS_DEDUP_TTL_S = 10               # Identical raw frames within this window are 
 WS_CONNECT_TIMEOUT_S = 60         # Hard cap on token fetch + handshake — a hung REST call
                                   # must never wedge the reader (observed: a token fetch
                                   # stalling ~7 min while the old socket died underneath)
+# Garage door / gate transitional-state watchdog.  Covers uniquely have
+# transitional states (Opening/Closing) that reach the client only as a single
+# eventless bitmask push, and physical openers frequently never report their
+# terminal state at all — which is why the ADC backend arms its own
+# GarageDoorStateFailSafe on every open/close command (40 s open, 50 s close)
+# and, on expiry, actively re-polls the opener via GetLatestDeviceStatus.  We
+# mirror that: when a cover sits in Opening/Closing past this window (set
+# comfortably beyond the backend's own fail-safe so its recovery runs first),
+# hit the {id}/refreshState?sendCommands=true endpoint once — the same active
+# poll — then resolve to whatever settled state it returns (UNKNOWN if it never
+# settles, matching the alarm.com app rather than latching "opening" forever).
+COVER_TRANSITION_TIMEOUT_S = 75    # Idle in Opening/Closing before an active refresh
+COVER_REFRESH_HTTP_TIMEOUT_S = 130 # refreshState blocks-polls the DB up to ~120 s server-side
+
 MAX_RECONNECT_WAIT_S = 30 * 60    # Cap for exponential back-off (30 min)
 MAX_CONNECTION_ATTEMPTS = 25      # After this the WS transitions to DEAD
 REQUEST_RETRY_LIMIT = 3           # REST request retry limit

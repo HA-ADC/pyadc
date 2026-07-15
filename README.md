@@ -21,6 +21,7 @@ Where possible, use local control for smart home devices that are natively suppo
 - **Full `DeviceStatusUpdate` bitmask handling** — fixes a known gap in community libraries
 - **Seamless WebSocket token rotation** — the backend force-closes every socket when its JWT expires, so pyadc opens a replacement connection *before* the old one dies (make-before-break) and dedupes the overlapping frames; no events are lost during handovers
 - **Coverage-gap recovery** — if a socket dies before its replacement connects, a `RECONNECTED` event triggers a full REST state resync
+- **Self-healing covers** — garage doors and gates report a transitional `opening`/`closing` state as a single push, and the physical opener frequently never reports reaching its terminal state at all. When a cover sits mid-transition past a timeout, pyadc actively re-polls it via the `refreshState` endpoint (the same active device poll the ADC backend's own garage fail-safe uses) and resolves it to the true state instead of latching on `opening` forever
 - **JWT expiry detection** — close code 1008 (failed rotation fallback) triggers automatic re-auth and reconnect
 - **JWT key version rotation** — tries `ver=A` then falls back to `ver=B`
 - **Camera support** — signed snapshot URLs, WebRTC live streaming via ADC's Janus gateway (optional `webrtc` extra), and momentary person / vehicle / animal / package object-detection events

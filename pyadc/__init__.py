@@ -237,6 +237,9 @@ class AlarmBridge:
         """Stop the WebSocket client and the session keep-alive task."""
         if self._gap_refresh_task is not None and not self._gap_refresh_task.done():
             self._gap_refresh_task.cancel()
+        # Cancel any pending cover transitional-state watchdogs.
+        self.garage_doors.close_watchdogs()
+        self.gates.close_watchdogs()
         await self.websocket.stop()
         await self.auth.stop_keep_alive()
 
