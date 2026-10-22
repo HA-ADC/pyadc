@@ -18,6 +18,7 @@ __all__ = [
     "EventBrokerTopic",
     "EventBrokerMessage",
     "ResourceEventMessage",
+    "DeviceEventMessage",
     "EventBrokerCallbackT",
 ]
 
@@ -46,6 +47,7 @@ class EventBrokerTopic(str, Enum):
     RESOURCE_DELETED = "resource_deleted"
     CONNECTION_EVENT = "connection_event"
     RAW_RESOURCE_EVENT = "raw_resource_event"
+    DEVICE_EVENT = "device_event"
 
 
 @dataclass(kw_only=True)
@@ -62,6 +64,40 @@ class ResourceEventMessage(EventBrokerMessage):
     topic: EventBrokerTopic = field(default=EventBrokerTopic.RESOURCE_UPDATED)
     device_id: str
     device_type: str  # ResourceType string, e.g. "devices/sensor"
+
+
+@dataclass(kw_only=True)
+class DeviceEventMessage(ResourceEventMessage):
+    """A momentary, stateless device event, such as a switch being double-tapped.
+
+    Unlike ``RESOURCE_UPDATED`` this does not signal a state change. It reports
+    that something *happened* on the device, so consumers can fire triggers
+    (in Home Assistant: event entities and device triggers).
+
+    Because it subclasses :class:`ResourceEventMessage`, device-level
+    subscriptions (``subscribe(..., device_id=...)``) work for this topic too.
+
+    Attributes:
+        event_type: The decoded :class:`~pyadc.const.ResourceEventType` string
+            when pyadc recognises the event, otherwise the raw ``EventType``
+            value exactly as ADC sent it (usually a C# ``EventTypeEnum`` int).
+        event_value: ``EventValue`` from the frame, if any.
+        action: Decoded action name (e.g. ``"double_tap"``) for button/scene
+            events pyadc knows how to interpret, otherwise ``None``.
+        button: Decoded button/scene number (1-based) for button/scene events,
+            otherwise ``None``.
+        key_attribute: Raw Central Scene key attribute (press type) for
+            button/scene events, e.g. ``3`` = double press; otherwise ``None``.
+        raw: The original WebSocket frame, for diagnostics.
+    """
+
+    topic: EventBrokerTopic = field(default=EventBrokerTopic.DEVICE_EVENT)
+    event_type: str | int
+    event_value: float | None = None
+    action: str | None = None
+    button: int | None = None
+    key_attribute: int | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 class EventBroker:

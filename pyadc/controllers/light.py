@@ -4,11 +4,20 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
-from pyadc.const import ResourceEventType, ResourceType
+from pyadc.const import (
+    SCENE_KEY_ATTRIBUTE_MULTIPLIER,
+    SCENE_KEY_ATTRIBUTE_NAMES,
+    ResourceEventType,
+    ResourceType,
+)
 from pyadc.controllers.base import BaseController, _validate_device_id
-from pyadc.events import ResourceEventMessage
+from pyadc.events import DeviceEventMessage, ResourceEventMessage
 from pyadc.models.light import Light, LightState
-from pyadc.websocket.messages import MonitorEventWSMessage, PropertyChangeWSMessage
+from pyadc.websocket.messages import (
+    EventWSMessage,
+    MonitorEventWSMessage,
+    PropertyChangeWSMessage,
+)
 
 if TYPE_CHECKING:
     from pyadc import AlarmBridge
@@ -17,6 +26,51 @@ log = logging.getLogger(__name__)
 
 # property_id 4 = LightColor/brightness level in ADC property change messages
 _PROPERTY_LIGHT_LEVEL = 4
+
+# Momentary button / Z-Wave Central Scene events (e.g. a switch double-tap).
+#
+# ADC reports these as EventTypeEnum.ButtonPressed (163) with
+#   EventValue = 10000 * keyAttribute + sceneNumber
+# (SCENE_KEY_ATTRIBUTE_MULTIPLIER). The key attribute is decoded to its
+# Z-Wave JS-style name (KeyPressed, KeyPressed2x, ...) as ``action``; an
+# unknown key attribute still publishes with ``action=None``.
+#
+# Any light event that is NOT a state change (on/off/level) is published on
+# ``EventBrokerTopic.DEVICE_EVENT`` whether or not it decodes, so consumers
+# always see it.
+KEY_ATTRIBUTE_ACTIONS: dict[int, str] = dict(SCENE_KEY_ATTRIBUTE_NAMES)
+
+# Event types that are state changes, never momentary device events.
+_LIGHT_STATE_EVENTS = frozenset(
+    {
+        ResourceEventType.LIGHT_TURNED_ON,
+        ResourceEventType.LIGHT_TURNED_OFF,
+        ResourceEventType.SWITCH_LEVEL_CHANGED,
+    }
+)
+
+
+def decode_button_event(
+    event_type: int | str, event_value: float | None
+) -> tuple[str | None, int | None, int | None]:
+    """Decode a ButtonPressed event into ``(action, button, key_attribute)``.
+
+    Returns ``(None, None, None)`` for anything that isn't a well-formed
+    ButtonPressed event. ``action`` is ``None`` when the key attribute is
+    valid but not one pyadc names (see :data:`KEY_ATTRIBUTE_ACTIONS`).
+    """
+    if event_type not in (ResourceEventType.BUTTON_PRESSED, 163):
+        return None, None, None
+    try:
+        packed = int(event_value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None, None, None
+    if packed <= 0:
+        return None, None, None
+    key_attribute, button = divmod(packed, SCENE_KEY_ATTRIBUTE_MULTIPLIER)
+    if button <= 0:
+        return None, None, None
+    return KEY_ATTRIBUTE_ACTIONS.get(key_attribute), button, key_attribute
 
 
 class LightController(BaseController):
@@ -134,7 +188,49 @@ class LightController(BaseController):
                     )
                     task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
                 return
+        if event_type not in _LIGHT_STATE_EVENTS and event_type not in self._event_state_map:
+            self._publish_device_event(msg.device_id, event_type, msg.event_value, msg.raw)
+            return
         super()._handle_monitor_event(msg, event_type)
+
+    def _handle_event(self, msg: EventWSMessage) -> None:
+        """Route non-state EventWSMessage frames to DEVICE_EVENT, the rest to state mapping."""
+        if msg.event_type not in _LIGHT_STATE_EVENTS and msg.event_type not in self._event_state_map:
+            self._publish_device_event(msg.device_id, msg.event_type, None, msg.raw)
+            return
+        super()._handle_event(msg)
+
+    def _publish_device_event(
+        self,
+        ws_device_id: str,
+        event_type: ResourceEventType | str | int,
+        event_value: float | None,
+        raw: dict[str, Any],
+    ) -> None:
+        """Publish a momentary (non-state) event for a light, e.g. a double-tap."""
+        device = self._get_device_by_ws_id(ws_device_id)
+        if device is None:
+            return
+        if isinstance(event_type, ResourceEventType):
+            event_type = event_type.value
+        action, button, key_attribute = decode_button_event(event_type, event_value)
+        log.debug(
+            "Light device event: device=%s event_type=%r event_value=%r -> "
+            "action=%s button=%s key_attribute=%s raw=%s",
+            device.resource_id, event_type, event_value, action, button, key_attribute, raw,
+        )
+        self._bridge.event_broker.publish(
+            DeviceEventMessage(
+                device_id=device.resource_id,
+                device_type=self.resource_type,
+                event_type=event_type,
+                event_value=event_value,
+                action=action,
+                button=button,
+                key_attribute=key_attribute,
+                raw=raw,
+            )
+        )
 
     async def _refresh_rgb_color(self, resource_id: str) -> None:
         """Re-fetch a single light from the REST API to pick up the latest color."""

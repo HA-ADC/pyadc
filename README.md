@@ -24,6 +24,7 @@ Where possible, use local control for smart home devices that are natively suppo
 - **Self-healing covers** — garage doors and gates report a transitional `opening`/`closing` state as a single push, and the physical opener frequently never reports reaching its terminal state at all. When a cover sits mid-transition past a timeout, pyadc actively re-polls it via the `refreshState` endpoint (the same active device poll the ADC backend's own garage fail-safe uses) and resolves it to the true state instead of latching on `opening` forever
 - **JWT expiry detection** — close code 1008 (failed rotation fallback) triggers automatic re-auth and reconnect
 - **JWT key version rotation** — tries `ver=A` then falls back to `ver=B`
+- **Z-Wave Central Scene button events** — switch taps, double/triple taps and holds (`ButtonPressed`, EventTypeEnum 163) decoded to Z-Wave JS-style `KeyPressed` / `KeyPressed2x` / `KeyHeldDown` / `KeyReleased` … with the scene (paddle) number, published on `EventBrokerTopic.DEVICE_EVENT`
 - **Camera support** — signed snapshot URLs, WebRTC live streaming via ADC's Janus gateway (optional `webrtc` extra), and momentary person / vehicle / animal / package object-detection events
 
 ## Supported Device Types
@@ -153,6 +154,30 @@ bridge.event_broker.subscribe(
 ```
 
 EventBroker callbacks are synchronous and run within the asyncio event loop.
+
+### Momentary device events (switch button presses)
+
+State changes arrive on `RESOURCE_UPDATED`. Things that *happen* without
+changing state — a Z-Wave switch being double-tapped or held — arrive on
+`DEVICE_EVENT` as a `DeviceEventMessage`:
+
+```python
+from pyadc.events import DeviceEventMessage, EventBrokerTopic
+
+def on_button(msg: DeviceEventMessage):
+    # e.g. action="KeyPressed2x", button=2 (scene 002 = off/down paddle)
+    print(msg.device_id, msg.action, msg.button, msg.key_attribute)
+
+bridge.event_broker.subscribe([EventBrokerTopic.DEVICE_EVENT], on_button)
+```
+
+ADC sends these as `ButtonPressed` (EventTypeEnum `163`) MonitorEvents with
+`EventValue = 10000 * keyAttribute + sceneNumber`. Key attributes follow the
+Z-Wave Central Scene spec: `0` KeyPressed, `1` KeyReleased, `2` KeyHeldDown,
+`3`–`6` KeyPressed2x–5x (0–4 verified on a real switch). A single tap or a hold
+also toggles the light, so it produces a normal `RESOURCE_UPDATED` as well;
+multi-taps do not. Any other non-state light event is still published on
+`DEVICE_EVENT` with `action=None`, so new event codes are visible.
 
 ## Arming / Disarming
 

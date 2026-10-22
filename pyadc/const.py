@@ -28,6 +28,9 @@ __all__ = [
     "OtpType",
     "ResourceEventType",
     "INT_TO_RESOURCE_EVENT_TYPE",
+    "SCENE_KEY_ATTRIBUTE_MULTIPLIER",
+    "SceneKeyAttribute",
+    "SCENE_KEY_ATTRIBUTE_NAMES",
     "DeviceStatusFlags",
     "ArmingState",
     "DeviceStatus",
@@ -165,6 +168,48 @@ class ResourceEventType(StrEnum):
     #     a `category=<ClassificationCategoryTypeEnum>` + bounding box + snapshot.
     VIDEO_CAMERA_TRIGGERED = "VideoCameraTriggered"
     VIDEO_ANALYTICS_DETECTION = "VideoAnalyticsDetection"
+    # Z-Wave Central Scene notification (e.g. a switch double-tap). EventValue
+    # packs the press type and scene/button: see SCENE_KEY_ATTRIBUTE_MULTIPLIER.
+    BUTTON_PRESSED = "ButtonPressed"
+
+
+# ButtonPressed (163) EventValue encoding, from the ADC backend:
+#   EventValue = 10000 * (int)SceneButtonKeyAttributeEnumType + sceneNumber
+# e.g. 30001 = DoublePress on scene/button 1, 30002 = DoublePress on button 2
+# (both verified against live frames from a Z-Wave switch).
+SCENE_KEY_ATTRIBUTE_MULTIPLIER = 10000
+
+
+class SceneKeyAttribute(IntEnum):
+    """SceneButtonKeyAttributeEnumType values carried in ButtonPressed events.
+
+    ADC mirrors the Z-Wave Central Scene key attributes. Verified against live
+    frames from a Z-Wave switch (2026-10-22): 0 (single press), 1 (released),
+    2 (held down), 3 (double press) and 4 (triple press). 5 and 6 follow the
+    Z-Wave Central Scene spec.
+    """
+
+    KEY_PRESSED = 0
+    KEY_RELEASED = 1
+    KEY_HELD_DOWN = 2
+    KEY_PRESSED_2X = 3
+    KEY_PRESSED_3X = 4
+    KEY_PRESSED_4X = 5
+    KEY_PRESSED_5X = 6
+    DOUBLE_PRESS = 3  # alias of KEY_PRESSED_2X (ADC backend name)
+
+
+# Z-Wave JS-style names for each key attribute (what HA's Z-Wave JS integration
+# shows as the Central Scene event type).
+SCENE_KEY_ATTRIBUTE_NAMES: dict[int, str] = {
+    SceneKeyAttribute.KEY_PRESSED: "KeyPressed",
+    SceneKeyAttribute.KEY_RELEASED: "KeyReleased",
+    SceneKeyAttribute.KEY_HELD_DOWN: "KeyHeldDown",
+    SceneKeyAttribute.KEY_PRESSED_2X: "KeyPressed2x",
+    SceneKeyAttribute.KEY_PRESSED_3X: "KeyPressed3x",
+    SceneKeyAttribute.KEY_PRESSED_4X: "KeyPressed4x",
+    SceneKeyAttribute.KEY_PRESSED_5X: "KeyPressed5x",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +242,7 @@ INT_TO_RESOURCE_EVENT_TYPE: dict[int, "ResourceEventType"] = {
     317: ResourceEventType.SWITCH_LEVEL_CHANGED,  # SwitchLevelChanged = 317
     71: ResourceEventType.VIDEO_CAMERA_TRIGGERED,       # VideoCameraTriggered = 71
     210: ResourceEventType.VIDEO_ANALYTICS_DETECTION,   # VideoAnalyticsDetection = 210
+    163: ResourceEventType.BUTTON_PRESSED,             # ButtonPressed = 163
 }
 
 
