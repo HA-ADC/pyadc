@@ -10,9 +10,43 @@ from pyadc.const import (
     ThermostatFanMode,
     ThermostatOperatingState,
     ThermostatSetpointType,
+    ThermostatStatus,
     ThermostatTemperatureMode,
 )
 from pyadc.models.base import AdcDeviceResource, _parse_enum, _extract_attrs
+
+
+# The REST ``state`` / ``desiredState`` attributes use the web API's
+# ThermostatStatusEnum (Unknown=0, Off=1, Heat=2, Cool=3, Auto=4, AuxHeat=5),
+# which is offset from the device/WebSocket ThermostatTemperatureModeEnum.
+_STATUS_TO_MODE: dict[ThermostatStatus, ThermostatTemperatureMode] = {
+    ThermostatStatus.OFF: ThermostatTemperatureMode.OFF,
+    ThermostatStatus.HEAT: ThermostatTemperatureMode.HEAT,
+    ThermostatStatus.COOL: ThermostatTemperatureMode.COOL,
+    ThermostatStatus.AUTO: ThermostatTemperatureMode.AUTO,
+    ThermostatStatus.AUX_HEAT: ThermostatTemperatureMode.AUX_HEAT,
+}
+
+
+def _parse_mode(raw_state: Any, raw_inferred: Any) -> ThermostatTemperatureMode:
+    """Return the configured HVAC mode from a REST thermostat resource.
+
+    ``state`` is the configured mode as a ThermostatStatusEnum value; e.g. a
+    thermostat in Auto reports ``state=4`` (verified against the ADC web UI).
+    ``inferredState`` is *not* the mode: it tracks the direction ADC infers the
+    thermostat is working in, so it reads Cool for a thermostat in Auto that is
+    cooling. It is only used as a fallback when ``state`` is missing or Unknown.
+    """
+    try:
+        mode = _STATUS_TO_MODE.get(ThermostatStatus(int(raw_state)))
+    except (TypeError, ValueError):
+        mode = None
+    if mode is not None:
+        return mode
+    try:
+        return ThermostatTemperatureMode(int(raw_inferred))
+    except (TypeError, ValueError):
+        return ThermostatTemperatureMode.OFF
 
 
 @dataclass
@@ -63,14 +97,7 @@ class Thermostat(AdcDeviceResource):
         """Parse from JSON:API resource object."""
         resource_id, name, snake_attrs = _extract_attrs(data)
 
-        # inferredState is what ADC actually displays (e.g. AUTO=3 even when
-        # the raw Z-Wave state reports AUX_HEAT=4). Fall back to state if absent.
-        raw_inferred = snake_attrs.get("inferred_state")
-        raw_mode = raw_inferred if raw_inferred is not None else snake_attrs.get("state")
-        try:
-            state = ThermostatTemperatureMode(raw_mode) if raw_mode is not None else ThermostatTemperatureMode.OFF
-        except ValueError:
-            state = ThermostatTemperatureMode.OFF
+        state = _parse_mode(snake_attrs.get("state"), snake_attrs.get("inferred_state"))
 
         # Build supported modes list from explicit boolean flags in the API response.
         # Fall back to a sensible default set if none of the flags are present.
